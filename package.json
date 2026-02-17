@@ -10,6 +10,9 @@
   "scripts": {
     "test": "npx tsx --test tests/*.test.ts"
   },
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "^0.0.37"
+  },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*"
