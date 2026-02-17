@@ -1,0 +1,23 @@
+{
+  "name": "kfrance-pi-pack",
+  "version": "1.0.0",
+  "description": "Personal pi extensions, skills, and prompt templates",
+  "keywords": ["pi-package"],
+  "type": "module",
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "scripts": {
+    "test": "npx tsx --test tests/*.test.ts"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*"
+  },
+  "devDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@sinclair/typebox": "*",
+    "tsx": "^4.0.0",
+    "@types/node": "^20.0.0"
+  }
+}
