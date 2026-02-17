@@ -11,6 +11,23 @@
 
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 
+// Matches zero or more git global options between "git" and the subcommand.
+// Handles: -c key=val, -c key="val with spaces", -c key="val with $(cmd)",
+// -C path, --no-pager, --git-dir=x, --work-tree=x, etc.
+// This prevents bypasses like: git -c "http...." push
+//
+// Flag value matching (in order of priority):
+//   "..."     double-quoted (non-greedy, handles nested $() and spaces)
+//   '...'     single-quoted (no interpolation)
+//   \S+=".."  unquoted key with quoted value (e.g. credential.helper="!cmd")
+//   \S+='...' unquoted key with single-quoted value
+//   \S+       plain unquoted value
+const GIT_OPTS = String.raw`(?:(?:-[a-zA-Z]\s+(?:".*?"|'[^']*'|\S+(?:=".*?"|='[^']*')?)\s+|--[\w-]+(?:[=\s](?:".*?"|'[^']*'|\S+(?:=".*?"|='[^']*')?))?(?:\s+|(?=\s)))*)`;
+
+function gitCmd(subcmd: string): RegExp {
+	return new RegExp(String.raw`\bgit\s+${GIT_OPTS}${subcmd}\b`, "i");
+}
+
 export const writePatterns: RegExp[] = [
 	// gh API write methods
 	/\bgh\s+api\b.*\s-X\s+(POST|PUT|PATCH|DELETE)\b/i,
@@ -21,23 +38,23 @@ export const writePatterns: RegExp[] = [
 	/\bgh\s+issue\s+(create|close|edit|comment|delete|transfer)\b/i,
 	/\bgh\s+release\s+(create|delete|edit)\b/i,
 
-	// git state-changing commands
-	/\bgit\s+add\b/i,
-	/\bgit\s+commit\b/i,
-	/\bgit\s+push\b/i,
-	/\bgit\s+rebase\b/i,
-	/\bgit\s+reset\b/i,
-	/\bgit\s+merge\b/i,
-	/\bgit\s+cherry-pick\b/i,
-	/\bgit\s+revert\b/i,
-	/\bgit\s+stash\b/i,
-	/\bgit\s+clean\b/i,
-	/\bgit\s+checkout\b.*\s--\s/i, // checkout with -- (file restore)
-	/\bgit\s+restore\b/i,
-	/\bgit\s+branch\s+-[dD]\b/i, // branch deletion
-	/\bgit\s+tag\s+-d\b/i, // tag deletion
-	/\bgit\s+push\b.*--force/i,
-	/\bgit\s+push\b.*\s-f\b/i,
+	// git state-changing commands (allows global options between git and subcommand)
+	gitCmd("add"),
+	gitCmd("commit"),
+	gitCmd("push"),
+	gitCmd("rebase"),
+	gitCmd("reset"),
+	gitCmd("merge"),
+	gitCmd("cherry-pick"),
+	gitCmd("revert"),
+	gitCmd("stash"),
+	gitCmd("clean"),
+	gitCmd("restore"),
+	gitCmd("checkout\\b.*\\s--\\s"), // checkout with -- (file restore)
+	gitCmd("branch\\s+-[dD]"), // branch deletion
+	gitCmd("tag\\s+-d"), // tag deletion
+	gitCmd("push\\b.*--force"), // force push (long flag)
+	gitCmd("push\\b.*\\s-f"), // force push (short flag)
 ];
 
 export function isWriteCommand(command: string): boolean {

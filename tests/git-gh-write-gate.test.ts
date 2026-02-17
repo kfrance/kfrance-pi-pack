@@ -2,452 +2,232 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { isWriteCommand } from "../extensions/git-gh-write-gate.ts";
 
+// Each entry: [command, shouldBlock, description]
+type TestCase = [string, boolean, string];
+
+function runCases(cases: TestCase[]) {
+	for (const [command, shouldBlock, description] of cases) {
+		it(description, () => {
+			assert.strictEqual(isWriteCommand(command), shouldBlock, `Command: ${command}`);
+		});
+	}
+}
+
 describe("git-gh-write-gate", () => {
 	describe("gh API write methods", () => {
-		it("blocks gh api POST", () => {
-			assert.ok(isWriteCommand("gh api repos/owner/repo/pulls/1/comments -X POST -f body='hi'"));
-		});
-
-		it("blocks gh api DELETE", () => {
-			assert.ok(isWriteCommand("gh api repos/owner/repo/issues/1 -X DELETE"));
-		});
-
-		it("blocks gh api PATCH", () => {
-			assert.ok(isWriteCommand("gh api repos/owner/repo/pulls/1 -X PATCH -f title='new'"));
-		});
-
-		it("blocks gh api PUT", () => {
-			assert.ok(isWriteCommand("gh api repos/owner/repo/pulls/1/merge -X PUT"));
-		});
-
-		it("blocks gh api --method POST", () => {
-			assert.ok(isWriteCommand("gh api repos/owner/repo/comments --method POST -f body='hi'"));
-		});
-
-		it("allows gh api GET (default)", () => {
-			assert.ok(!isWriteCommand("gh api repos/owner/repo/pulls/302"));
-		});
-
-		it("allows gh api with --jq", () => {
-			assert.ok(!isWriteCommand("gh api repos/owner/repo/pulls/302/comments --jq '.[]'"));
-		});
+		runCases([
+			["gh api repos/owner/repo/pulls/1/comments -X POST -f body='hi'", true, "blocks gh api -X POST"],
+			["gh api repos/owner/repo/issues/1 -X DELETE", true, "blocks gh api -X DELETE"],
+			["gh api repos/owner/repo/pulls/1 -X PATCH -f title='new'", true, "blocks gh api -X PATCH"],
+			["gh api repos/owner/repo/pulls/1/merge -X PUT", true, "blocks gh api -X PUT"],
+			["gh api repos/owner/repo/comments --method POST -f body='hi'", true, "blocks gh api --method POST"],
+			["gh api repos/owner/repo/pulls/302", false, "allows gh api GET (default)"],
+			["gh api repos/owner/repo/pulls/302/comments --jq '.[]'", false, "allows gh api with --jq"],
+		]);
 	});
 
 	describe("gh CLI write commands", () => {
-		it("blocks gh pr create", () => {
-			assert.ok(isWriteCommand("gh pr create --title 'test' --body 'test'"));
-		});
-
-		it("blocks gh pr merge", () => {
-			assert.ok(isWriteCommand("gh pr merge 302 --squash"));
-		});
-
-		it("blocks gh pr comment", () => {
-			assert.ok(isWriteCommand("gh pr comment 302 --body 'looks good'"));
-		});
-
-		it("blocks gh pr close", () => {
-			assert.ok(isWriteCommand("gh pr close 302"));
-		});
-
-		it("blocks gh pr review", () => {
-			assert.ok(isWriteCommand("gh pr review 302 --approve"));
-		});
-
-		it("blocks gh issue create", () => {
-			assert.ok(isWriteCommand("gh issue create --title 'bug'"));
-		});
-
-		it("blocks gh issue comment", () => {
-			assert.ok(isWriteCommand("gh issue comment 42 --body 'fixed'"));
-		});
-
-		it("blocks gh issue close", () => {
-			assert.ok(isWriteCommand("gh issue close 42"));
-		});
-
-		it("blocks gh release create", () => {
-			assert.ok(isWriteCommand("gh release create v1.0.0"));
-		});
-
-		it("allows gh pr view", () => {
-			assert.ok(!isWriteCommand("gh pr view 302"));
-		});
-
-		it("allows gh pr list", () => {
-			assert.ok(!isWriteCommand("gh pr list --state open"));
-		});
-
-		it("allows gh issue list", () => {
-			assert.ok(!isWriteCommand("gh issue list"));
-		});
-
-		it("allows gh pr view with json", () => {
-			assert.ok(!isWriteCommand("gh pr view 302 --json title,body"));
-		});
+		runCases([
+			["gh pr create --title 'test' --body 'test'", true, "blocks gh pr create"],
+			["gh pr merge 302 --squash", true, "blocks gh pr merge"],
+			["gh pr comment 302 --body 'looks good'", true, "blocks gh pr comment"],
+			["gh pr close 302", true, "blocks gh pr close"],
+			["gh pr review 302 --approve", true, "blocks gh pr review"],
+			["gh pr edit 302 --title 'new title'", true, "blocks gh pr edit"],
+			["gh issue create --title 'bug'", true, "blocks gh issue create"],
+			["gh issue comment 42 --body 'fixed'", true, "blocks gh issue comment"],
+			["gh issue close 42", true, "blocks gh issue close"],
+			["gh issue delete 42", true, "blocks gh issue delete"],
+			["gh issue transfer 42 other-repo", true, "blocks gh issue transfer"],
+			["gh release create v1.0.0", true, "blocks gh release create"],
+			["gh release delete v1.0.0", true, "blocks gh release delete"],
+			["gh release edit v1.0.0 --draft", true, "blocks gh release edit"],
+			["gh pr view 302", false, "allows gh pr view"],
+			["gh pr list --state open", false, "allows gh pr list"],
+			["gh issue list", false, "allows gh issue list"],
+			["gh pr view 302 --json title,body", false, "allows gh pr view with json"],
+		]);
 	});
 
-	describe("git state-changing commands", () => {
-		it("blocks git add", () => {
-			assert.ok(isWriteCommand("git add ."));
-		});
+	describe("git simple commands", () => {
+		runCases([
+			["git add .", true, "blocks git add"],
+			["git add src/main.ts", true, "blocks git add with path"],
+			['git commit -m "fix bug"', true, "blocks git commit"],
+			["git push origin main", true, "blocks git push"],
+			["git push --force origin main", true, "blocks git push --force"],
+			["git push -f origin main", true, "blocks git push -f"],
+			["git rebase main", true, "blocks git rebase"],
+			["git rebase -i HEAD~3", true, "blocks git rebase interactive"],
+			["git reset --hard HEAD~1", true, "blocks git reset hard"],
+			["git reset --soft HEAD~1", true, "blocks git reset soft"],
+			["git merge feature-branch", true, "blocks git merge"],
+			["git cherry-pick abc123", true, "blocks git cherry-pick"],
+			["git revert HEAD", true, "blocks git revert"],
+			["git stash", true, "blocks git stash"],
+			["git stash pop", true, "blocks git stash pop"],
+			["git clean -fd", true, "blocks git clean"],
+			["git restore src/main.ts", true, "blocks git restore"],
+			["git checkout -- src/main.ts", true, "blocks git checkout -- (file restore)"],
+			["git branch -d old-branch", true, "blocks git branch -d"],
+			["git branch -D old-branch", true, "blocks git branch -D"],
+			["git tag -d v1.0.0", true, "blocks git tag -d"],
+		]);
+	});
 
-		it("blocks git add with path", () => {
-			assert.ok(isWriteCommand("git add src/main.ts"));
-		});
-
-		it("blocks git commit", () => {
-			assert.ok(isWriteCommand('git commit -m "fix bug"'));
-		});
-
-		it("blocks git push", () => {
-			assert.ok(isWriteCommand("git push origin main"));
-		});
-
-		it("blocks git push --force", () => {
-			assert.ok(isWriteCommand("git push --force origin main"));
-		});
-
-		it("blocks git push -f", () => {
-			assert.ok(isWriteCommand("git push -f origin main"));
-		});
-
-		it("blocks git rebase", () => {
-			assert.ok(isWriteCommand("git rebase main"));
-		});
-
-		it("blocks git rebase interactive", () => {
-			assert.ok(isWriteCommand("git rebase -i HEAD~3"));
-		});
-
-		it("blocks git reset", () => {
-			assert.ok(isWriteCommand("git reset --hard HEAD~1"));
-		});
-
-		it("blocks git reset soft", () => {
-			assert.ok(isWriteCommand("git reset --soft HEAD~1"));
-		});
-
-		it("blocks git merge", () => {
-			assert.ok(isWriteCommand("git merge feature-branch"));
-		});
-
-		it("blocks git cherry-pick", () => {
-			assert.ok(isWriteCommand("git cherry-pick abc123"));
-		});
-
-		it("blocks git revert", () => {
-			assert.ok(isWriteCommand("git revert HEAD"));
-		});
-
-		it("blocks git stash", () => {
-			assert.ok(isWriteCommand("git stash"));
-		});
-
-		it("blocks git stash pop", () => {
-			assert.ok(isWriteCommand("git stash pop"));
-		});
-
-		it("blocks git clean", () => {
-			assert.ok(isWriteCommand("git clean -fd"));
-		});
-
-		it("blocks git restore", () => {
-			assert.ok(isWriteCommand("git restore src/main.ts"));
-		});
-
-		it("blocks git checkout -- (file restore)", () => {
-			assert.ok(isWriteCommand("git checkout -- src/main.ts"));
-		});
-
-		it("blocks git branch -d", () => {
-			assert.ok(isWriteCommand("git branch -d old-branch"));
-		});
-
-		it("blocks git branch -D", () => {
-			assert.ok(isWriteCommand("git branch -D old-branch"));
-		});
-
-		it("blocks git tag -d", () => {
-			assert.ok(isWriteCommand("git tag -d v1.0.0"));
-		});
+	describe("git with global options between git and subcommand", () => {
+		runCases([
+			['git -c key=val push origin main', true, "blocks git -c key=val push"],
+			['git -C /project add .', true, "blocks git -C /project add"],
+			['git --no-pager commit -m "msg"', true, "blocks git --no-pager commit"],
+			['git --git-dir=.git push origin main', true, "blocks git --git-dir=.git push"],
+			['git --work-tree=/project reset --hard HEAD', true, "blocks git --work-tree=... reset"],
+			['git -c "http.https://github.com/.extraheader=Authorization: basic stuff" push 2>&1', true, "blocks git -c with quoted value push"],
+			["git -c 'user.name=Test' commit -m 'msg'", true, "blocks git -c with single-quoted value commit"],
+			['git -C /tmp -c key=val push origin main', true, "blocks git with multiple global options push"],
+			['git --no-pager --git-dir=.git add .', true, "blocks git with multiple long options add"],
+			// Should NOT match subcommand appearing as a flag value
+			['git log --format=push', false, "allows git log --format=push (push is a value, not subcommand)"],
+			['git config push.default simple', false, "allows git config mentioning push as argument"],
+			['git --no-pager log --oneline', false, "allows git --no-pager log (read-only)"],
+			['git -C /project status', false, "allows git -C /project status (read-only)"],
+			['git --git-dir=.git log --oneline', false, "allows git --git-dir log (read-only)"],
+		]);
 	});
 
 	describe("compound commands (&&, ||, ;, pipes)", () => {
-		it("blocks git add after && chain", () => {
-			assert.ok(isWriteCommand("cd /data/project && git add ."));
-		});
-
-		it("blocks git commit in && chain", () => {
-			assert.ok(isWriteCommand('git add . && git commit -m "update"'));
-		});
-
-		it("blocks git push in && chain", () => {
-			assert.ok(isWriteCommand('git add . && git commit -m "update" && git push origin main'));
-		});
-
-		it("blocks git reset after || fallback", () => {
-			assert.ok(isWriteCommand("git merge feature || git reset --hard HEAD"));
-		});
-
-		it("blocks git add after semicolon", () => {
-			assert.ok(isWriteCommand("echo 'done'; git add ."));
-		});
-
-		it("blocks git commit after semicolon", () => {
-			assert.ok(isWriteCommand('ls -la; git commit -m "quick fix"'));
-		});
-
-		it("blocks gh api POST in && chain", () => {
-			assert.ok(isWriteCommand("echo 'posting' && gh api repos/owner/repo/comments -X POST -f body='hi'"));
-		});
-
-		it("blocks git push piped from other command", () => {
-			assert.ok(isWriteCommand("echo 'pushing' | tee log.txt && git push origin main"));
-		});
-
-		it("blocks git rebase in complex chain", () => {
-			assert.ok(isWriteCommand("git fetch origin && git rebase origin/main && echo 'done'"));
-		});
-
-		it("allows read-only && chain", () => {
-			assert.ok(!isWriteCommand("git fetch origin && git log --oneline -5"));
-		});
-
-		it("allows read-only semicolon chain", () => {
-			assert.ok(!isWriteCommand("git status; git diff"));
-		});
-
-		it("allows piped read-only commands", () => {
-			assert.ok(!isWriteCommand("git log --oneline | head -20"));
-		});
-
-		it("allows git diff piped to grep", () => {
-			assert.ok(!isWriteCommand("git diff HEAD~1 | grep 'TODO'"));
-		});
+		runCases([
+			["cd /data/project && git add .", true, "blocks git add after &&"],
+			['git add . && git commit -m "update"', true, "blocks git commit in && chain"],
+			['git add . && git commit -m "update" && git push origin main', true, "blocks git push in && chain"],
+			["git merge feature || git reset --hard HEAD", true, "blocks git reset after ||"],
+			["echo 'done'; git add .", true, "blocks git add after ;"],
+			['ls -la; git commit -m "quick fix"', true, "blocks git commit after ;"],
+			["echo 'posting' && gh api repos/owner/repo/comments -X POST -f body='hi'", true, "blocks gh api POST in && chain"],
+			["echo 'pushing' | tee log.txt && git push origin main", true, "blocks git push after pipe and &&"],
+			["git fetch origin && git rebase origin/main && echo 'done'", true, "blocks git rebase in complex chain"],
+			["git fetch origin && git log --oneline -5", false, "allows read-only && chain"],
+			["git status; git diff", false, "allows read-only ; chain"],
+			["git log --oneline | head -20", false, "allows piped read-only"],
+			["git diff HEAD~1 | grep 'TODO'", false, "allows git diff piped to grep"],
+		]);
 	});
 
 	describe("subshells and command substitution", () => {
-		it("blocks git add inside subshell", () => {
-			assert.ok(isWriteCommand("(cd /project && git add .)"));
-		});
-
-		it("blocks git commit inside subshell", () => {
-			assert.ok(isWriteCommand('(git add . && git commit -m "msg")'));
-		});
-
-		it("blocks git push inside $(...)", () => {
-			assert.ok(isWriteCommand("echo $(git push origin main 2>&1)"));
-		});
-
-		it("blocks git reset inside backticks", () => {
-			assert.ok(isWriteCommand("echo `git reset --hard HEAD`"));
-		});
-
-		it("blocks gh api POST inside subshell", () => {
-			assert.ok(isWriteCommand("(gh api repos/o/r/comments -X POST -f body='hi')"));
-		});
-
-		it("allows read-only inside subshell", () => {
-			assert.ok(!isWriteCommand("echo $(git log --oneline -1)"));
-		});
+		runCases([
+			["(cd /project && git add .)", true, "blocks git add inside (...)"],
+			['(git add . && git commit -m "msg")', true, "blocks git commit inside (...)"],
+			["echo $(git push origin main 2>&1)", true, "blocks git push inside $(...)"],
+			["echo `git reset --hard HEAD`", true, "blocks git reset inside backticks"],
+			["(gh api repos/o/r/comments -X POST -f body='hi')", true, "blocks gh api POST inside (...)"],
+			["echo $(git log --oneline -1)", false, "allows read-only inside $(...)"],
+		]);
 	});
 
 	describe("multiline commands", () => {
-		it("blocks git add on second line", () => {
-			assert.ok(isWriteCommand("cd /project\ngit add ."));
-		});
-
-		it("blocks git commit on third line", () => {
-			assert.ok(isWriteCommand('cd /project\ngit add .\ngit commit -m "msg"'));
-		});
-
-		it("blocks git push in multiline script", () => {
-			assert.ok(isWriteCommand("git add .\ngit commit -m 'update'\ngit push origin main"));
-		});
-
-		it("blocks gh api POST on later line", () => {
-			assert.ok(isWriteCommand("BODY='hello'\ngh api repos/o/r/comments -X POST -f body=\"$BODY\""));
-		});
-
-		it("allows multiline read-only", () => {
-			assert.ok(!isWriteCommand("git status\ngit log --oneline -5\ngit diff"));
-		});
+		runCases([
+			["cd /project\ngit add .", true, "blocks git add on second line"],
+			['cd /project\ngit add .\ngit commit -m "msg"', true, "blocks git commit on third line"],
+			["git add .\ngit commit -m 'update'\ngit push origin main", true, "blocks git push in multiline"],
+			["BODY='hello'\ngh api repos/o/r/comments -X POST -f body=\"$BODY\"", true, "blocks gh api POST on later line"],
+			["git status\ngit log --oneline -5\ngit diff", false, "allows multiline read-only"],
+		]);
 	});
 
 	describe("environment variables and quoting", () => {
-		it("blocks git push with env var prefix", () => {
-			assert.ok(isWriteCommand("GIT_SSH_COMMAND='ssh -i key' git push origin main"));
-		});
-
-		it("blocks git commit with env var in message", () => {
-			assert.ok(isWriteCommand('git commit -m "$COMMIT_MSG"'));
-		});
-
-		it("blocks git add with variable expansion in path", () => {
-			assert.ok(isWriteCommand("git add ${FILE_PATH}"));
-		});
-
-		it("blocks gh api POST with quoted body", () => {
-			assert.ok(isWriteCommand(`gh api repos/o/r/comments -X POST -f body="it's done"`));
-		});
-
-		it("blocks git push with variable branch", () => {
-			assert.ok(isWriteCommand("git push origin $BRANCH_NAME"));
-		});
+		runCases([
+			["GIT_SSH_COMMAND='ssh -i key' git push origin main", true, "blocks git push with env var prefix"],
+			['git commit -m "$COMMIT_MSG"', true, "blocks git commit with env var in message"],
+			["git add ${FILE_PATH}", true, "blocks git add with variable expansion"],
+			[`gh api repos/o/r/comments -X POST -f body="it's done"`, true, "blocks gh api POST with quoted body"],
+			["git push origin $BRANCH_NAME", true, "blocks git push with variable branch"],
+		]);
 	});
 
 	describe("heredocs and redirections", () => {
-		it("blocks git commit with heredoc-style message", () => {
-			assert.ok(isWriteCommand('git commit -m "$(cat <<EOF\nLong message\nEOF\n)"'));
-		});
-
-		it("blocks gh api POST with redirect", () => {
-			assert.ok(isWriteCommand("gh api repos/o/r/comments -X POST -f body='hi' > /dev/null"));
-		});
-
-		it("blocks git push with stderr redirect", () => {
-			assert.ok(isWriteCommand("git push origin main 2>&1"));
-		});
-
-		it("blocks git stash with output redirect", () => {
-			assert.ok(isWriteCommand("git stash 2>&1 | tee stash.log"));
-		});
+		runCases([
+			['git commit -m "$(cat <<EOF\nLong message\nEOF\n)"', true, "blocks git commit with heredoc"],
+			["gh api repos/o/r/comments -X POST -f body='hi' > /dev/null", true, "blocks gh api POST with redirect"],
+			["git push origin main 2>&1", true, "blocks git push with stderr redirect"],
+			["git stash 2>&1 | tee stash.log", true, "blocks git stash with output redirect"],
+		]);
 	});
 
 	describe("conditional and loop constructs", () => {
-		it("blocks git push inside if statement", () => {
-			assert.ok(isWriteCommand("if [ -n \"$PUSH\" ]; then git push origin main; fi"));
-		});
-
-		it("blocks git add inside for loop", () => {
-			assert.ok(isWriteCommand("for f in *.ts; do git add $f; done"));
-		});
-
-		it("blocks git commit inside while loop", () => {
-			assert.ok(isWriteCommand('while true; do git commit -m "auto"; sleep 60; done'));
-		});
-
-		it("blocks gh api POST inside if", () => {
-			assert.ok(isWriteCommand("if true; then gh api repos/o/r -X POST -f body='y'; fi"));
-		});
-
-		it("allows read-only inside if", () => {
-			assert.ok(!isWriteCommand("if [ -d .git ]; then git status; fi"));
-		});
+		runCases([
+			['if [ -n "$PUSH" ]; then git push origin main; fi', true, "blocks git push inside if"],
+			["for f in *.ts; do git add $f; done", true, "blocks git add inside for loop"],
+			['while true; do git commit -m "auto"; sleep 60; done', true, "blocks git commit inside while"],
+			["if true; then gh api repos/o/r -X POST -f body='y'; fi", true, "blocks gh api POST inside if"],
+			["if [ -d .git ]; then git status; fi", false, "allows read-only inside if"],
+		]);
 	});
 
-	describe("edge cases and false positives", () => {
-		// These are intentional false positives — we prefer to over-prompt
-		// rather than risk missing a real destructive command
-		it("blocks echo containing git add as string (intentional false positive)", () => {
-			assert.ok(isWriteCommand("echo 'run git add . to stage changes'"));
-		});
-
-		it("blocks grep for git push in logs (intentional false positive)", () => {
-			assert.ok(isWriteCommand("grep 'git push' deploy.log"));
-		});
-
-		it("blocks comment-only lines mentioning git push (intentional false positive)", () => {
-			assert.ok(isWriteCommand("# git push origin main"));
-		});
-
-		it("allows cat of a file named git-commit", () => {
-			assert.ok(!isWriteCommand("cat docs/git-commit.md"));
-		});
-
-		it("blocks git add even with extra whitespace", () => {
-			assert.ok(isWriteCommand("git  add ."));
-		});
-
-		it("blocks git commit with tab whitespace", () => {
-			assert.ok(isWriteCommand("git\tcommit -m 'msg'"));
-		});
-
-		it("blocks git push even with leading whitespace", () => {
-			assert.ok(isWriteCommand("  git push origin main"));
-		});
-
-		it("allows git-push (hyphenated, not a git command)", () => {
-			assert.ok(!isWriteCommand("./git-push-helper.sh"));
-		});
-
-		it("allows reading a file called commit.txt", () => {
-			assert.ok(!isWriteCommand("cat commit.txt"));
-		});
-
-		it("blocks gh pr edit", () => {
-			assert.ok(isWriteCommand("gh pr edit 302 --title 'new title'"));
-		});
-
-		it("blocks gh issue delete", () => {
-			assert.ok(isWriteCommand("gh issue delete 42"));
-		});
-
-		it("blocks gh issue transfer", () => {
-			assert.ok(isWriteCommand("gh issue transfer 42 other-repo"));
-		});
-
-		it("blocks gh release delete", () => {
-			assert.ok(isWriteCommand("gh release delete v1.0.0"));
-		});
-
-		it("blocks gh release edit", () => {
-			assert.ok(isWriteCommand("gh release edit v1.0.0 --draft"));
-		});
+	describe("real-world bypass attempts", () => {
+		runCases([
+			[
+				'cd /data/kfrance-pi-pack && gh auth switch --user kfrance 2>&1 && GH_TOKEN=$(gh auth token) git -c "http.https://github.com/.extraheader=Authorization: basic $(echo -n "x-access-token:$(gh auth token)" | base64 -w0)" push 2>&1',
+				true,
+				"blocks git push wrapped in gh auth switch and git -c with complex value",
+			],
+			[
+				'GH_TOKEN=$(gh auth token) git -c "http.https://github.com/.extraheader=Authorization: basic token" push origin main',
+				true,
+				"blocks git push with GH_TOKEN env and -c config",
+			],
+			[
+				'git -c credential.helper="!gh auth token" push origin main',
+				true,
+				"blocks git push with credential helper override",
+			],
+			[
+				'git -c "user.email=fake@test.com" -c "user.name=Fake" commit -m "spoof"',
+				true,
+				"blocks git commit with spoofed author via -c flags",
+			],
+			[
+				"ssh remote-host 'cd /repo && git push origin main'",
+				true,
+				"blocks git push inside ssh command string",
+			],
+		]);
 	});
 
-	describe("read-only commands (should pass through)", () => {
-		it("allows git status", () => {
-			assert.ok(!isWriteCommand("git status"));
-		});
+	describe("whitespace and formatting edge cases", () => {
+		runCases([
+			["git  add .", true, "blocks git add with double space"],
+			["git\tcommit -m 'msg'", true, "blocks git commit with tab"],
+			["  git push origin main", true, "blocks git push with leading whitespace"],
+			["git   -c   key=val   push   origin", true, "blocks git push with excessive whitespace in global options"],
+		]);
+	});
 
-		it("allows git log", () => {
-			assert.ok(!isWriteCommand("git log --oneline -10"));
-		});
+	describe("intentional false positives (prefer safety over precision)", () => {
+		runCases([
+			["echo 'run git add . to stage changes'", true, "blocks echo containing git add (intentional)"],
+			["grep 'git push' deploy.log", true, "blocks grep for git push (intentional)"],
+			["# git push origin main", true, "blocks comment mentioning git push (intentional)"],
+		]);
+	});
 
-		it("allows git diff", () => {
-			assert.ok(!isWriteCommand("git diff HEAD~1"));
-		});
-
-		it("allows git show", () => {
-			assert.ok(!isWriteCommand("git show HEAD:src/main.ts"));
-		});
-
-		it("allows git branch (list)", () => {
-			assert.ok(!isWriteCommand("git branch"));
-		});
-
-		it("allows git branch -a", () => {
-			assert.ok(!isWriteCommand("git branch -a"));
-		});
-
-		it("allows git remote -v", () => {
-			assert.ok(!isWriteCommand("git remote -v"));
-		});
-
-		it("allows git fetch", () => {
-			assert.ok(!isWriteCommand("git fetch origin"));
-		});
-
-		it("allows git checkout (branch switch)", () => {
-			assert.ok(!isWriteCommand("git checkout feature-branch"));
-		});
-
-		it("allows git blame", () => {
-			assert.ok(!isWriteCommand("git blame src/main.ts"));
-		});
-
-		it("allows non-git commands", () => {
-			assert.ok(!isWriteCommand("ls -la"));
-		});
-
-		it("allows cat", () => {
-			assert.ok(!isWriteCommand("cat README.md"));
-		});
-
-		it("allows grep", () => {
-			assert.ok(!isWriteCommand("grep -r 'TODO' src/"));
-		});
+	describe("should NOT match (no false blocking)", () => {
+		runCases([
+			["git status", false, "allows git status"],
+			["git log --oneline -10", false, "allows git log"],
+			["git diff HEAD~1", false, "allows git diff"],
+			["git show HEAD:src/main.ts", false, "allows git show"],
+			["git branch", false, "allows git branch (list)"],
+			["git branch -a", false, "allows git branch -a"],
+			["git remote -v", false, "allows git remote -v"],
+			["git fetch origin", false, "allows git fetch"],
+			["git checkout feature-branch", false, "allows git checkout (branch switch)"],
+			["git blame src/main.ts", false, "allows git blame"],
+			["ls -la", false, "allows non-git commands"],
+			["cat README.md", false, "allows cat"],
+			["grep -r 'TODO' src/", false, "allows grep"],
+			["./git-push-helper.sh", false, "allows hyphenated git-push script"],
+			["cat commit.txt", false, "allows reading file called commit.txt"],
+			["cat docs/git-commit.md", false, "allows reading file called git-commit.md"],
+		]);
 	});
 });
