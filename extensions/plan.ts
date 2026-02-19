@@ -31,10 +31,13 @@ import { execSync } from "node:child_process";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import type { AutocompleteItem } from "@mariozechner/pi-tui";
 
+import { resolveOutputDir, readOutputDirFromSettings, DEFAULT_OUTPUT_DIR } from "../lib/plan-utils.ts";
+
+export { resolveOutputDir, readOutputDirFromSettings };
+
 export type PlanMode = "light" | "heavy";
 
 const PLAN_BACKUP_NAMESPACE = "plan-backups";
-const DEFAULT_OUTPUT_DIR = ".plan";
 
 export interface ParsedPlanArgs {
   mode: PlanMode;
@@ -89,33 +92,7 @@ export function parsePlanArgs(raw: string): ParsedPlanArgs {
   return { mode: "heavy", idea: trimmed, outputDir };
 }
 
-/**
- * Read plan.outputDir from .pi/settings.json if it exists.
- */
-export function readOutputDirFromSettings(cwd: string): string | null {
-  const settingsPath = path.join(cwd, ".pi", "settings.json");
-  try {
-    const content = fs.readFileSync(settingsPath, "utf-8");
-    const settings = JSON.parse(content);
-    const outputDir = settings?.plan?.outputDir;
-    return typeof outputDir === "string" && outputDir.trim() ? outputDir.trim() : null;
-  } catch {
-    return null;
-  }
-}
 
-/**
- * Resolve the output directory using the precedence chain:
- *   1. --output flag (from parsed args)
- *   2. plan.outputDir in .pi/settings.json
- *   3. .plan/ (default)
- */
-export function resolveOutputDir(flagValue: string | null, cwd: string): string {
-  if (flagValue) return flagValue;
-  const fromSettings = readOutputDirFromSettings(cwd);
-  if (fromSettings) return fromSettings;
-  return DEFAULT_OUTPUT_DIR;
-}
 
 /**
  * Detect whether a string looks like a file path rather than inline idea text.
