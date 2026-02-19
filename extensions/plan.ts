@@ -121,6 +121,8 @@ export function resolveOutputDir(flagValue: string | null, cwd: string): string 
  * Detect whether a string looks like a file path rather than inline idea text.
  */
 export function looksLikeFilePath(input: string): boolean {
+  // A file path is a single token — if it contains whitespace, it's idea text
+  if (/\s/.test(input)) return false;
   if (/\.(md|txt|markdown)$/i.test(input)) return true;
   if (/^[.~\/]/.test(input)) return true;
   return false;

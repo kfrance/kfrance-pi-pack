@@ -183,6 +183,14 @@ describe("looksLikeFilePath", () => {
     assert.strictEqual(looksLikeFilePath("Implement v2.0 features"), false);
   });
 
+  it("returns false for multi-word text ending with .md", () => {
+    assert.strictEqual(looksLikeFilePath("Let's finalize the plan outlined in @app_design.md app_design.md"), false);
+  });
+
+  it("returns false for text with spaces even if it contains a path-like segment", () => {
+    assert.strictEqual(looksLikeFilePath("finalize plan in ideas/feature.md"), false);
+  });
+
   it("is case-insensitive for extensions", () => {
     assert.strictEqual(looksLikeFilePath("PLAN.MD"), true);
     assert.strictEqual(looksLikeFilePath("notes.TXT"), true);
