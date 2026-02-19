@@ -57,6 +57,14 @@ Requires user confirmation before executing destructive git or GitHub commands. 
 - `git status`, `git log`, `git diff`, `git show`, `git fetch`, `git branch` (list), `git checkout` (branch switch)
 - `gh pr view/list`, `gh issue list`, `gh api` (GET)
 
+## Skills
+
+### linear-cli
+
+Manage Linear issues from the command line using the `linear` CLI. Requires the [`linear` CLI](https://github.com/schpet/linear-cli) to be installed and authenticated.
+
+Covers issue management, team/project queries, and direct GraphQL API access as a fallback for advanced queries.
+
 ## Development
 
 ```bash
