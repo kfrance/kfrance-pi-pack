@@ -6,6 +6,9 @@ import * as os from "node:os";
 import {
   parsePlanArgs,
   extractOutputFlag,
+  extractLinearFlag,
+  extractNoBranchFlag,
+  validatePlanInput,
   looksLikeFilePath,
   extractIdeaFromFile,
   buildPlanPrompt,
@@ -13,6 +16,7 @@ import {
   resolveOutputDir,
   readOutputDirFromSettings,
   type PlanMode,
+  type ParsedPlanArgs,
 } from "../extensions/plan.ts";
 
 // ---------------------------------------------------------------------------
@@ -58,6 +62,126 @@ describe("extractOutputFlag", () => {
 });
 
 // ---------------------------------------------------------------------------
+// extractLinearFlag
+// ---------------------------------------------------------------------------
+
+describe("extractLinearFlag", () => {
+  it("extracts --linear with space-separated issueId", () => {
+    const result = extractLinearFlag("--linear ENG-123 Add caching");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+    assert.strictEqual(result.remaining, "Add caching");
+  });
+
+  it("extracts --linear= with equals-separated issueId", () => {
+    const result = extractLinearFlag("--linear=ENG-123 Add caching");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+    assert.strictEqual(result.remaining, "Add caching");
+  });
+
+  it("returns null when no --linear flag present", () => {
+    const result = extractLinearFlag("heavy Add caching");
+    assert.strictEqual(result.linearIssue, null);
+    assert.strictEqual(result.remaining, "heavy Add caching");
+  });
+
+  it("handles --linear in the middle of args", () => {
+    const result = extractLinearFlag("heavy --linear ENG-123 Add caching");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+    assert.strictEqual(result.remaining, "heavy Add caching");
+  });
+
+  it("does not consume mode keyword as issueId", () => {
+    const result = extractLinearFlag("--linear heavy Add caching");
+    assert.strictEqual(result.linearIssue, null);
+    assert.strictEqual(result.remaining, "heavy Add caching");
+  });
+
+  it("does not consume another flag as issueId", () => {
+    const result = extractLinearFlag("--linear --output ./plans/");
+    assert.strictEqual(result.linearIssue, null);
+    assert.strictEqual(result.remaining, "--output ./plans/");
+  });
+
+  it("returns null when --linear is at end with no value", () => {
+    const result = extractLinearFlag("heavy --linear");
+    assert.strictEqual(result.linearIssue, null);
+    assert.strictEqual(result.remaining, "heavy");
+  });
+
+  it("returns null when --linear is alone", () => {
+    const result = extractLinearFlag("--linear");
+    assert.strictEqual(result.linearIssue, null);
+    assert.strictEqual(result.remaining, "");
+  });
+
+  it("collapses extra whitespace after removal", () => {
+    const result = extractLinearFlag("heavy  --linear ENG-123  Add caching");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+    assert.ok(!result.remaining.includes("  "), "should not have double spaces");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractNoBranchFlag
+// ---------------------------------------------------------------------------
+
+describe("extractNoBranchFlag", () => {
+  it("extracts --no-branch when present", () => {
+    const result = extractNoBranchFlag("--no-branch Add caching");
+    assert.strictEqual(result.noBranch, true);
+    assert.strictEqual(result.remaining, "Add caching");
+  });
+
+  it("returns false when --no-branch not present", () => {
+    const result = extractNoBranchFlag("heavy Add caching");
+    assert.strictEqual(result.noBranch, false);
+    assert.strictEqual(result.remaining, "heavy Add caching");
+  });
+
+  it("handles --no-branch in the middle of args", () => {
+    const result = extractNoBranchFlag("heavy --no-branch Add caching");
+    assert.strictEqual(result.noBranch, true);
+    assert.strictEqual(result.remaining, "heavy Add caching");
+  });
+
+  it("handles --no-branch at end", () => {
+    const result = extractNoBranchFlag("heavy --no-branch");
+    assert.strictEqual(result.noBranch, true);
+    assert.strictEqual(result.remaining, "heavy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validatePlanInput
+// ---------------------------------------------------------------------------
+
+describe("validatePlanInput", () => {
+  it("returns error when both --linear and idea text are provided", () => {
+    const parsed: ParsedPlanArgs = { mode: "heavy", idea: "some text", outputDir: null, linearIssue: "ENG-123", noBranch: false };
+    const error = validatePlanInput(parsed);
+    assert.ok(error !== null);
+    assert.ok(error!.includes("Cannot use --linear"));
+  });
+
+  it("returns error when neither --linear nor idea text is provided", () => {
+    const parsed: ParsedPlanArgs = { mode: "heavy", idea: "", outputDir: null, linearIssue: null, noBranch: false };
+    const error = validatePlanInput(parsed);
+    assert.ok(error !== null);
+    assert.ok(error!.includes("No idea provided"));
+  });
+
+  it("returns null when --linear is provided without idea text", () => {
+    const parsed: ParsedPlanArgs = { mode: "heavy", idea: "", outputDir: null, linearIssue: "ENG-123", noBranch: false };
+    assert.strictEqual(validatePlanInput(parsed), null);
+  });
+
+  it("returns null when idea text is provided without --linear", () => {
+    const parsed: ParsedPlanArgs = { mode: "heavy", idea: "Add caching", outputDir: null, linearIssue: null, noBranch: false };
+    assert.strictEqual(validatePlanInput(parsed), null);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // parsePlanArgs
 // ---------------------------------------------------------------------------
 
@@ -67,6 +191,8 @@ describe("parsePlanArgs", () => {
     assert.strictEqual(result.mode, "heavy");
     assert.strictEqual(result.idea, "Add caching to the API layer");
     assert.strictEqual(result.outputDir, null);
+    assert.strictEqual(result.linearIssue, null);
+    assert.strictEqual(result.noBranch, false);
   });
 
   it("parses explicit heavy mode", () => {
@@ -143,6 +269,63 @@ describe("parsePlanArgs", () => {
     assert.strictEqual(result.mode, "heavy");
     assert.strictEqual(result.idea, "Add caching");
     assert.strictEqual(result.outputDir, "./plans/");
+  });
+
+  it("extracts --linear with heavy mode (default)", () => {
+    const result = parsePlanArgs("--linear ENG-123");
+    assert.strictEqual(result.mode, "heavy");
+    assert.strictEqual(result.idea, "");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+  });
+
+  it("extracts --linear with explicit light mode", () => {
+    const result = parsePlanArgs("light --linear ENG-123");
+    assert.strictEqual(result.mode, "light");
+    assert.strictEqual(result.idea, "");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+  });
+
+  it("extracts --linear with explicit heavy mode", () => {
+    const result = parsePlanArgs("heavy --linear ENG-123");
+    assert.strictEqual(result.mode, "heavy");
+    assert.strictEqual(result.idea, "");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+  });
+
+  it("does not consume 'heavy' as issueId after --linear", () => {
+    const result = parsePlanArgs("--linear heavy Add thing");
+    assert.strictEqual(result.linearIssue, null);
+    assert.strictEqual(result.mode, "heavy");
+    assert.strictEqual(result.idea, "Add thing");
+  });
+
+  it("extracts --linear combined with --output", () => {
+    const result = parsePlanArgs("heavy --output ./plans/ --linear ENG-123");
+    assert.strictEqual(result.mode, "heavy");
+    assert.strictEqual(result.idea, "");
+    assert.strictEqual(result.outputDir, "./plans/");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+  });
+
+  it("extracts --no-branch flag", () => {
+    const result = parsePlanArgs("--no-branch Add caching");
+    assert.strictEqual(result.mode, "heavy");
+    assert.strictEqual(result.idea, "Add caching");
+    assert.strictEqual(result.noBranch, true);
+  });
+
+  it("extracts --no-branch with mode keyword", () => {
+    const result = parsePlanArgs("light --no-branch Add caching");
+    assert.strictEqual(result.mode, "light");
+    assert.strictEqual(result.idea, "Add caching");
+    assert.strictEqual(result.noBranch, true);
+  });
+
+  it("combines --linear and --no-branch", () => {
+    const result = parsePlanArgs("--linear ENG-123 --no-branch");
+    assert.strictEqual(result.linearIssue, "ENG-123");
+    assert.strictEqual(result.noBranch, true);
+    assert.strictEqual(result.idea, "");
   });
 });
 
@@ -314,11 +497,9 @@ describe("buildPlanPrompt", () => {
     }
   });
 
-  it("both modes include test-discovery step", () => {
-    for (const mode of ["light", "heavy"] as PlanMode[]) {
-      const prompt = buildPlanPrompt(mode, "idea");
-      assert.ok(prompt.includes("test-discovery"), `${mode} should include test-discovery`);
-    }
+  it("heavy mode includes test-discovery step", () => {
+    const prompt = buildPlanPrompt("heavy", "idea");
+    assert.ok(prompt.includes("test-discovery"), "heavy should include test-discovery");
   });
 
   it("heavy mode includes YAML frontmatter instructions", () => {
@@ -332,6 +513,63 @@ describe("buildPlanPrompt", () => {
     const prompt = buildPlanPrompt("heavy", "idea");
     assert.ok(!prompt.includes("evaluation_notes"));
     assert.ok(!prompt.includes("git_sha"));
+  });
+
+  it("light mode does NOT include test-discovery", () => {
+    const prompt = buildPlanPrompt("light", "idea");
+    assert.ok(!prompt.includes("test-discovery"), "light mode should not mention test-discovery");
+  });
+
+  // Branch creation tests
+  it("includes git checkout -b instruction by default (no linear, no noBranch)", () => {
+    for (const mode of ["light", "heavy"] as PlanMode[]) {
+      const prompt = buildPlanPrompt(mode, "idea", undefined, {});
+      assert.ok(prompt.includes("git checkout -b"), `${mode} should include git checkout -b`);
+      assert.ok(prompt.includes("Branch Creation"), `${mode} should include Branch Creation section`);
+    }
+  });
+
+  it("includes linear issue start when linearIssue is provided", () => {
+    for (const mode of ["light", "heavy"] as PlanMode[]) {
+      const prompt = buildPlanPrompt(mode, "idea", undefined, { linearIssue: "ENG-123" });
+      assert.ok(prompt.includes("linear issue start ENG-123"), `${mode} should include linear issue start`);
+      assert.ok(!prompt.includes("git checkout -b"), `${mode} should NOT include git checkout -b when linear`);
+    }
+  });
+
+  it("does NOT include branch instructions when noBranch is true", () => {
+    for (const mode of ["light", "heavy"] as PlanMode[]) {
+      const prompt = buildPlanPrompt(mode, "idea", undefined, { noBranch: true });
+      assert.ok(!prompt.includes("Branch Creation"), `${mode} should not include Branch Creation`);
+      assert.ok(!prompt.includes("git checkout -b"), `${mode} should not include git checkout -b`);
+      assert.ok(!prompt.includes("linear issue start"), `${mode} should not include linear issue start`);
+    }
+  });
+
+  it("noBranch suppresses branch even with linearIssue", () => {
+    const prompt = buildPlanPrompt("heavy", "idea", undefined, { linearIssue: "ENG-123", noBranch: true });
+    assert.ok(!prompt.includes("Branch Creation"));
+    assert.ok(!prompt.includes("linear issue start"));
+  });
+
+  // Linear front matter tests
+  it("heavy mode includes linear_issue in front matter instruction when linearIssue provided", () => {
+    const prompt = buildPlanPrompt("heavy", "idea", undefined, { linearIssue: "ENG-123" });
+    assert.ok(prompt.includes('linear_issue'), "heavy should include linear_issue front matter");
+    assert.ok(prompt.includes('ENG-123'), "heavy should include the issue ID");
+  });
+
+  it("light mode does NOT include linear_issue front matter instruction", () => {
+    const prompt = buildPlanPrompt("light", "idea", undefined, { linearIssue: "ENG-123" });
+    assert.ok(!prompt.includes("linear_issue"), "light mode should not include linear_issue front matter");
+  });
+
+  it("no linear instructions when linearIssue is not provided", () => {
+    for (const mode of ["light", "heavy"] as PlanMode[]) {
+      const prompt = buildPlanPrompt(mode, "idea", undefined, {});
+      assert.ok(!prompt.includes("linear issue start"), `${mode} should not include linear issue start`);
+      assert.ok(!prompt.includes("linear_issue"), `${mode} should not include linear_issue front matter`);
+    }
   });
 });
 

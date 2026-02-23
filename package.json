@@ -2,17 +2,23 @@
   "name": "kfrance-pi-pack",
   "version": "1.0.0",
   "description": "Personal pi extensions, skills, and prompt templates",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "type": "module",
   "pi": {
-    "extensions": ["./extensions"],
-    "skills": ["./skills"]
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./skills"
+    ]
   },
   "scripts": {
     "test": "npx tsx --test tests/*.test.ts"
   },
   "dependencies": {
-    "@anthropic-ai/sandbox-runtime": "^0.0.37"
+    "@anthropic-ai/sandbox-runtime": "0.0.34"
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
@@ -21,7 +27,7 @@
   "devDependencies": {
     "@mariozechner/pi-coding-agent": "*",
     "@sinclair/typebox": "*",
-    "tsx": "^4.0.0",
-    "@types/node": "^20.0.0"
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0"
   }
 }

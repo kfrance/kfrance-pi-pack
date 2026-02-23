@@ -18,6 +18,9 @@
  *   /plan heavy <idea text or path>
  *   /plan light <idea text or path>
  *   /plan heavy --output ./plans/ <idea text or path>
+ *   /plan --linear ENG-123
+ *   /plan light --linear ENG-123
+ *   /plan --no-branch <idea text or path>
  *
  * Requires:
  *   - subagent extension (global: ~/.pi/agent/extensions/subagent/)
@@ -43,6 +46,8 @@ export interface ParsedPlanArgs {
   mode: PlanMode;
   idea: string;
   outputDir: string | null;
+  linearIssue: string | null;
+  noBranch: boolean;
 }
 
 /**
@@ -70,26 +75,102 @@ export function extractOutputFlag(args: string): { outputDir: string | null; rem
 }
 
 /**
+ * Extract --linear <issueId> from args string, returning the issueId and remaining args.
+ * Handles both --linear <issueId> and --linear=<issueId>.
+ * Issue IDs look like TEAM-123; if the next token after --linear looks like a mode
+ * keyword or another flag, it is NOT consumed as the issue ID.
+ */
+export function extractLinearFlag(args: string): { linearIssue: string | null; remaining: string } {
+  // --linear=<issueId>
+  const eqMatch = args.match(/--linear=(\S+)/i);
+  if (eqMatch) {
+    return {
+      linearIssue: eqMatch[1],
+      remaining: args.replace(eqMatch[0], "").replace(/\s+/g, " ").trim(),
+    };
+  }
+  // --linear <issueId> — but don't consume mode keywords or flags as the issue ID
+  const spaceMatch = args.match(/--linear\s+(\S+)/i);
+  if (spaceMatch) {
+    const candidate = spaceMatch[1];
+    if (/^(light|heavy)$/i.test(candidate) || candidate.startsWith("--")) {
+      // --linear with no valid issue ID following it
+      return {
+        linearIssue: null,
+        remaining: args.replace(/--linear/i, "").replace(/\s+/g, " ").trim(),
+      };
+    }
+    return {
+      linearIssue: candidate,
+      remaining: args.replace(spaceMatch[0], "").replace(/\s+/g, " ").trim(),
+    };
+  }
+  // --linear at end of string (no value)
+  if (/--linear\s*$/i.test(args)) {
+    return {
+      linearIssue: null,
+      remaining: args.replace(/--linear\s*$/i, "").replace(/\s+/g, " ").trim(),
+    };
+  }
+  return { linearIssue: null, remaining: args };
+}
+
+/**
+ * Extract --no-branch boolean flag from args string.
+ */
+export function extractNoBranchFlag(args: string): { noBranch: boolean; remaining: string } {
+  if (/--no-branch/i.test(args)) {
+    return {
+      noBranch: true,
+      remaining: args.replace(/--no-branch/i, "").replace(/\s+/g, " ").trim(),
+    };
+  }
+  return { noBranch: false, remaining: args };
+}
+
+/**
+ * Validate that the parsed plan input is consistent.
+ * Returns an error message string if invalid, or null if valid.
+ */
+export function validatePlanInput(parsed: ParsedPlanArgs): string | null {
+  if (parsed.linearIssue && parsed.idea) {
+    return "Cannot use --linear and provide idea text at the same time. Use --linear <issueId> alone, or provide idea text without --linear.";
+  }
+  if (!parsed.linearIssue && !parsed.idea) {
+    return "No idea provided. Use --linear <issueId> or provide idea text.";
+  }
+  return null;
+}
+
+/**
  * Parse the raw command args into mode, idea text, and optional output dir.
  *
- * /plan light Add caching                    -> { mode: "light",  idea: "Add caching", outputDir: null }
- * /plan heavy --output ./plans/ Add caching  -> { mode: "heavy",  idea: "Add caching", outputDir: "./plans/" }
- * /plan --output ./plans/ Add caching        -> { mode: "heavy",  idea: "Add caching", outputDir: "./plans/" }
- * /plan Add caching                          -> { mode: "heavy",  idea: "Add caching", outputDir: null }
+ * /plan light Add caching                    -> { mode: "light",  idea: "Add caching", ... }
+ * /plan heavy --output ./plans/ Add caching  -> { mode: "heavy",  idea: "Add caching", outputDir: "./plans/", ... }
+ * /plan --linear ENG-123                     -> { mode: "heavy",  idea: "", linearIssue: "ENG-123", ... }
+ * /plan light --linear ENG-123               -> { mode: "light",  idea: "", linearIssue: "ENG-123", ... }
+ * /plan --no-branch Add caching              -> { mode: "heavy",  idea: "Add caching", noBranch: true, ... }
  */
 export function parsePlanArgs(raw: string): ParsedPlanArgs {
-  const { outputDir, remaining } = extractOutputFlag(raw);
-  const trimmed = remaining.trim();
+  const { outputDir, remaining: r1 } = extractOutputFlag(raw);
+  const { linearIssue, remaining: r2 } = extractLinearFlag(r1);
+  const { noBranch, remaining: r3 } = extractNoBranchFlag(r2);
+  const trimmed = r3.trim();
 
   const lightMatch = trimmed.match(/^light\s+([\s\S]+)$/i);
   if (lightMatch) {
-    return { mode: "light", idea: lightMatch[1].trim(), outputDir };
+    return { mode: "light", idea: lightMatch[1].trim(), outputDir, linearIssue, noBranch };
   }
   const heavyMatch = trimmed.match(/^heavy\s+([\s\S]+)$/i);
   if (heavyMatch) {
-    return { mode: "heavy", idea: heavyMatch[1].trim(), outputDir };
+    return { mode: "heavy", idea: heavyMatch[1].trim(), outputDir, linearIssue, noBranch };
   }
-  return { mode: "heavy", idea: trimmed, outputDir };
+  // When --linear is used with just a mode keyword and no idea text, consume the mode keyword
+  const modeOnlyMatch = trimmed.match(/^(light|heavy)$/i);
+  if (modeOnlyMatch && linearIssue) {
+    return { mode: modeOnlyMatch[1].toLowerCase() as PlanMode, idea: "", outputDir, linearIssue, noBranch };
+  }
+  return { mode: "heavy", idea: trimmed, outputDir, linearIssue, noBranch };
 }
 
 
@@ -121,14 +202,21 @@ export function extractIdeaFromFile(filePath: string, cwd: string): string {
   return content.trim();
 }
 
+export interface PlanPromptOptions {
+  linearIssue?: string | null;
+  noBranch?: boolean;
+}
+
 /**
  * Build the plan prompt for a given mode, idea text, and output directory.
  */
-export function buildPlanPrompt(mode: PlanMode, ideaText: string, outputDir?: string): string {
+export function buildPlanPrompt(mode: PlanMode, ideaText: string, outputDir?: string, options?: PlanPromptOptions): string {
+  const linearIssue = options?.linearIssue ?? null;
+  const noBranch = options?.noBranch ?? false;
   if (mode === "heavy") {
-    return buildHeavyPrompt(ideaText, outputDir ?? DEFAULT_OUTPUT_DIR);
+    return buildHeavyPrompt(ideaText, outputDir ?? DEFAULT_OUTPUT_DIR, linearIssue, noBranch);
   }
-  return buildLightPrompt(ideaText);
+  return buildLightPrompt(ideaText, linearIssue, noBranch);
 }
 
 /**
@@ -236,7 +324,52 @@ function symlinkBundledAgents(extensionDir: string): { linked: string[]; errors:
 // Prompt builders
 // ---------------------------------------------------------------------------
 
-function buildHeavyPrompt(ideaText: string, outputDir: string): string {
+/**
+ * Build the branch creation instruction snippet for inclusion in prompts.
+ */
+function buildBranchInstruction(linearIssue: string | null, noBranch: boolean, context: "heavy" | "light"): string {
+  if (noBranch) return "";
+
+  const timing = context === "heavy"
+    ? "After saving the plan file"
+    : "After presenting the plan";
+
+  if (linearIssue) {
+    return `
+
+## Branch Creation
+
+${timing}, create a branch and mark the Linear issue as in-progress by running:
+
+\`\`\`
+linear issue start ${linearIssue} --branch <branch-name>
+\`\`\`
+
+Choose a descriptive branch name based on the plan (e.g., \`feat/add-caching-layer\`, \`fix/dashboard-rendering\`). Keep it concise, lowercase, and hyphen-separated.`;
+  }
+
+  return `
+
+## Branch Creation
+
+${timing}, create a branch for the work by running:
+
+\`\`\`
+git checkout -b <branch-name>
+\`\`\`
+
+Choose a descriptive branch name based on the plan (e.g., \`feat/add-caching-layer\`, \`fix/dashboard-rendering\`). Keep it concise, lowercase, and hyphen-separated.`;
+}
+
+/**
+ * Build the Linear front matter instruction snippet for heavy mode.
+ */
+function buildLinearFrontMatterInstruction(linearIssue: string | null): string {
+  if (!linearIssue) return "";
+  return `, linear_issue (use "${linearIssue}")`;
+}
+
+function buildHeavyPrompt(ideaText: string, outputDir: string, linearIssue: string | null = null, noBranch: boolean = false): string {
   return `Here is an initial idea for a plan that needs to be refined and formalized:
 
 ${ideaText}
@@ -260,7 +393,7 @@ Your task:
    - \`test-reviewer\`: Give it the draft plan text (including the Unit Tests and Integration Tests sections) plus the test-discovery results, and ask it to review
 7. Ask me additional clarifying questions if needed based on the subagent reviews
 8. Generate a complete plan file and save it to \`${outputDir}/<plan_id>.md\` with this structure:
-   - YAML front matter with: plan_id (unique, 3-100 chars, alphanumeric/._- only), status (use "draft")
+   - YAML front matter with: plan_id (unique, 3-100 chars, alphanumeric/._- only), status (use "draft")${buildLinearFrontMatterInstruction(linearIssue)}
    - Markdown body with: Objectives, Requirements & Constraints, Work Items, Deliverables, Out of Scope sections
    - Work Items section must include:
      - Unit Tests: Fast tests with mocked dependencies and no external API calls
@@ -329,10 +462,10 @@ When you outline options or make suggestions, label them (e.g., Option 1, Option
 
 ## Plan File Guidelines
 
-The plan file should focus on *what* needs to be built, not *how* to implement it. Avoid detailed code implementations—leave those to the developer. Code snippets are appropriate only when they define interfaces, schemas, or data layouts that constrain the design.`;
+The plan file should focus on *what* needs to be built, not *how* to implement it. Avoid detailed code implementations—leave those to the developer. Code snippets are appropriate only when they define interfaces, schemas, or data layouts that constrain the design.${buildBranchInstruction(linearIssue, noBranch, "heavy")}`;
 }
 
-function buildLightPrompt(ideaText: string): string {
+function buildLightPrompt(ideaText: string, linearIssue: string | null = null, noBranch: boolean = false): string {
   return `Here is an initial idea for a plan that needs to be refined:
 
 ${ideaText}
@@ -349,18 +482,16 @@ Your task:
    - Focus on understanding what needs to be built and why
    - Clarify scope, constraints, and expected behavior
    - Skip questions already resolved by confirmed assumptions
-4. Once requirements are clear, invoke the \`test-discovery\` subagent to analyze existing tests relevant to the proposed changes. Provide context about which modules/files will be affected and what functionality is being added or modified. Use \`agentScope: "user"\` to access the agents.
-5. Ask any testing-related questions based on the discovery results (e.g., "Should we extend existing test X or create new tests?")
-6. Draft a concise plan (keep it brief — key objectives, work items with test coverage, and out of scope), then invoke the \`combined-reviewer\` subagent with \`agentScope: "user"\` to review:
+4. Draft a concise plan (keep it brief — key objectives, work items with test coverage, and out of scope), then invoke the \`combined-reviewer\` subagent with \`agentScope: "user"\` to review:
    \`\`\`
    subagent({
      agent: "combined-reviewer",
-     task: "Review this plan for maintainability and test coverage:\\n\\n<paste draft plan>\\n\\nTest discovery results:\\n\\n<paste discovery results>",
+     task: "Review this plan for maintainability and test coverage:\\n\\n<paste draft plan>",
      agentScope: "user"
    })
    \`\`\`
-7. Ask me additional clarifying questions if needed based on the review
-8. Present the final plan in chat (do NOT save to a file)
+5. Ask me additional clarifying questions if needed based on the review
+6. Present the final plan in chat (do NOT save to a file)
 
 ## Pre-planning Assumptions (Step 2)
 
@@ -386,7 +517,7 @@ Keep the plan concise and conversational — this is a lightweight plan, not a f
 - **Work Items**: What needs to be done, including test coverage (unit and integration)
 - **Out of Scope**: What we're explicitly not doing
 
-The plan should focus on *what* needs to be built, not *how* to implement it.`;
+The plan should focus on *what* needs to be built, not *how* to implement it.${buildBranchInstruction(linearIssue, noBranch, "light")}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -404,6 +535,8 @@ function getCompletions(prefix: string, cwd: string): AutocompleteItem[] | null 
       { value: "light ", label: "light", description: "Lightweight plan, no file saved" },
       { value: "heavy ", label: "heavy", description: "Full plan with subagent reviews and file output" },
       { value: "--output ", label: "--output", description: "Set output directory for plan file" },
+      { value: "--linear ", label: "--linear", description: "Use a Linear issue as the idea source" },
+      { value: "--no-branch ", label: "--no-branch", description: "Skip branch creation after planning" },
     ];
     for (const kw of keywords) {
       if (kw.label.startsWith(partial.toLowerCase())) {
@@ -412,11 +545,18 @@ function getCompletions(prefix: string, cwd: string): AutocompleteItem[] | null 
     }
   }
 
-  // After mode keyword, suggest --output if not already present
-  if (words.length === 2 && /^(light|heavy)$/i.test(words[0]) && !prefix.includes("--output")) {
+  // After mode keyword, suggest flags if not already present
+  if (words.length === 2 && /^(light|heavy)$/i.test(words[0])) {
     const partial = words[1] || "";
-    if ("--output".startsWith(partial)) {
-      items.push({ value: `${words[0]} --output `, label: "--output", description: "Set output directory for plan file" });
+    const flags = [
+      { flag: "--output", value: `${words[0]} --output `, description: "Set output directory for plan file" },
+      { flag: "--linear", value: `${words[0]} --linear `, description: "Use a Linear issue as the idea source" },
+      { flag: "--no-branch", value: `${words[0]} --no-branch `, description: "Skip branch creation after planning" },
+    ];
+    for (const f of flags) {
+      if (!prefix.includes(f.flag) && f.flag.startsWith(partial)) {
+        items.push({ value: f.value, label: f.flag, description: f.description });
+      }
     }
   }
 
@@ -490,7 +630,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("plan", {
-    description: "Start a structured planning session (usage: /plan [light|heavy] [--output <dir>] <idea>)",
+    description: "Start a structured planning session (usage: /plan [light|heavy] [--output <dir>] [--linear <issueId>] [--no-branch] <idea>)",
     getArgumentCompletions: (prefix: string, ctx?: any): AutocompleteItem[] | null => {
       const cwd = ctx?.cwd || process.cwd();
       return getCompletions(prefix, cwd);
@@ -498,18 +638,37 @@ export default function (pi: ExtensionAPI) {
     handler: async (args, ctx) => {
       if (!args || !args.trim()) {
         ctx.ui.notify(
-          "Usage: /plan [light|heavy] [--output <dir>] <idea text or path to .md file>\n\nOutput path precedence:\n  1. --output flag\n  2. plan.outputDir in .pi/settings.json\n  3. .plan/ (default)\n\nExamples:\n  /plan Add a dashboard widget for recent activity\n  /plan light Add caching to the API layer\n  /plan heavy --output ./plans/ ideas/new-feature.md",
+          "Usage: /plan [light|heavy] [--output <dir>] [--linear <issueId>] [--no-branch] <idea text or path to .md file>\n\nOutput path precedence:\n  1. --output flag\n  2. plan.outputDir in .pi/settings.json\n  3. .plan/ (default)\n\nExamples:\n  /plan Add a dashboard widget for recent activity\n  /plan light Add caching to the API layer\n  /plan heavy --output ./plans/ ideas/new-feature.md\n  /plan --linear ENG-123\n  /plan light --linear ENG-123\n  /plan --no-branch Add caching",
           "error",
         );
         return;
       }
 
-      const { mode, idea, outputDir: flagOutputDir } = parsePlanArgs(args);
-      const resolvedOutputDir = resolveOutputDir(flagOutputDir, ctx.cwd);
-      activeOutputDir = resolvedOutputDir;
+      const parsed = parsePlanArgs(args);
+      const { mode, idea, outputDir: flagOutputDir, linearIssue, noBranch } = parsed;
 
+      // Fetch idea from Linear if --linear is used
       let ideaText: string;
-      if (looksLikeFilePath(idea)) {
+      if (linearIssue) {
+        const validationError = validatePlanInput(parsed);
+        if (validationError) {
+          ctx.ui.notify(validationError, "error");
+          return;
+        }
+        try {
+          const rawOutput = execSync(`linear issue view ${linearIssue}`, {
+            cwd: ctx.cwd,
+            encoding: "utf-8",
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          // Strip ANSI escape codes
+          ideaText = rawOutput.replace(/\x1b\[[0-9;]*m/g, "").trim();
+          ctx.ui.notify(`Loaded issue from Linear: ${linearIssue}`, "info");
+        } catch (err: any) {
+          ctx.ui.notify(`Failed to fetch Linear issue ${linearIssue}: ${err.message}`, "error");
+          return;
+        }
+      } else if (looksLikeFilePath(idea)) {
         try {
           ideaText = extractIdeaFromFile(idea, ctx.cwd);
           ctx.ui.notify(`Loaded idea from: ${idea}`, "info");
@@ -521,9 +680,13 @@ export default function (pi: ExtensionAPI) {
         ideaText = idea;
       }
 
-      const fullPrompt = buildPlanPrompt(mode, ideaText, resolvedOutputDir);
+      const resolvedOutputDir = resolveOutputDir(flagOutputDir, ctx.cwd);
+      activeOutputDir = resolvedOutputDir;
+
+      const fullPrompt = buildPlanPrompt(mode, ideaText, resolvedOutputDir, { linearIssue, noBranch });
       const outputInfo = mode === "heavy" ? ` → ${resolvedOutputDir}/` : "";
-      ctx.ui.notify(`Starting ${mode} planning session...${outputInfo}`, "info");
+      const linearInfo = linearIssue ? ` [${linearIssue}]` : "";
+      ctx.ui.notify(`Starting ${mode} planning session...${outputInfo}${linearInfo}`, "info");
       pi.sendUserMessage(fullPrompt);
     },
   });
