@@ -44,7 +44,7 @@ export const writePatterns: RegExp[] = [
 	gitCmd("push"),
 	gitCmd("rebase"),
 	gitCmd("reset"),
-	gitCmd("merge"),
+	gitCmd("merge(?!-(base|tree)\\b)"),  // "merge" but not read-only "merge-base", "merge-tree"
 	gitCmd("cherry-pick"),
 	gitCmd("revert"),
 	gitCmd("stash"),
