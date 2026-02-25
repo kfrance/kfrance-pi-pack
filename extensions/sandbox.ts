@@ -10,7 +10,7 @@
  * - Selectively allows writes to configured paths (project dir, /tmp, etc.)
  * - Auto-denies writes to dangerous files (.bashrc, .gitconfig, .env, git hooks, etc.)
  * - Handles symlinks, git worktrees, non-existent paths, and other edge cases
- * - Seccomp filter blocks Unix socket creation (prevents sandbox escape)
+ * - Seccomp Unix socket filter is disabled at startup for tool compatibility (tsx, etc.)
  * - Edit and Write tools are also sandboxed: paths are checked against
  *   allowWrite/denyWrite before the file operation is performed
  *
@@ -51,7 +51,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { SandboxManager } from "@anthropic-ai/sandbox-runtime";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import { type BashOperations, createBashTool, createEditTool, createWriteTool } from "@mariozechner/pi-coding-agent";
+import { type BashOperations, createBashTool, createReadTool, createEditTool, createWriteTool } from "@mariozechner/pi-coding-agent";
 
 // ============================================================================
 // Types
@@ -401,8 +401,9 @@ export function formatConfig(active?: boolean, filesystem?: FilesystemConfig): s
 		"",
 		"Network: unrestricted (full access)",
 		"",
-		"Protected tools: bash, edit, write",
+		"Protected tools: bash, read, edit, write",
 		"  bash: OS-level bwrap isolation (read-only root + selective writes)",
+		"  read: path checked against denyRead before execution",
 		"  edit/write: path checked against allowWrite/denyWrite before execution",
 		"",
 		"Note: Writes to dangerous files (.bashrc, .gitconfig, .env, git hooks,",
@@ -433,12 +434,45 @@ function checkDeps(ctx: { ui: { notify: (msg: string, level: string) => void } }
 	return true;
 }
 
+/**
+ * Replace apply-seccomp binaries with no-op shell scripts that skip the
+ * seccomp filter and just exec the command. This allows Unix socket creation
+ * (needed by tools like tsx for IPC pipes) while keeping all other sandbox
+ * protections (bwrap filesystem isolation, read/write path enforcement).
+ *
+ * The runtime's API conflates allowAllUnixSockets with network restriction,
+ * so there's no clean config-only way to disable the seccomp filter without
+ * also triggering --unshare-net.
+ */
+function neutralizeSeccompBinaries(): void {
+	const noopScript = '#!/bin/bash\n# No-op: skip seccomp filter (arg1=bpf), exec remaining args\nshift\nexec "$@"\n';
+	try {
+		const runtimeDir = dirname(require.resolve("@anthropic-ai/sandbox-runtime/package.json"));
+		const arches = ["x64", "arm64"];
+		for (const arch of arches) {
+			for (const base of ["vendor", join("dist", "vendor")]) {
+				const binaryPath = join(runtimeDir, base, "seccomp", arch, "apply-seccomp");
+				if (!existsSync(binaryPath)) continue;
+				// Check if already replaced (shell scripts start with #!)
+				const { readFileSync, writeFileSync, chmodSync } = require("fs");
+				const head = readFileSync(binaryPath, { encoding: null }).subarray(0, 2).toString();
+				if (head === "#!") continue; // already a no-op script
+				writeFileSync(binaryPath, noopScript);
+				chmodSync(binaryPath, 0o755);
+			}
+		}
+	} catch {
+		// Non-fatal — seccomp filter will still apply
+	}
+}
+
 function enableSandbox(
 	filesystem: FilesystemConfig,
 	ctx: { ui: { notify: (msg: string, level: string) => void; setStatus: (id: string, text: string) => void; theme: any } },
 ): boolean {
 	if (!checkDeps(ctx)) return false;
 
+	neutralizeSeccompBinaries();
 	currentFilesystem = { ...filesystem };
 	sandboxActive = true;
 	updateStatus(ctx);
@@ -474,6 +508,26 @@ export default function (pi: ExtensionAPI) {
 				operations: createSandboxedBashOps(),
 			});
 			return sandboxedBash.execute(id, params, signal, onUpdate);
+		},
+	});
+
+	// Override read tool — enforce denyRead when sandbox is active
+	const localRead = createReadTool(localCwd);
+	pi.registerTool({
+		...localRead,
+		label: "read (sandbox-aware)",
+		async execute(id, params, signal, onUpdate, ctx) {
+			if (sandboxActive) {
+				const cwd = ctx?.cwd ?? localCwd;
+				const absolutePath = resolvePathForCheck(params.path, cwd);
+				const check = isReadAllowed(absolutePath, cwd);
+				if (!check.allowed) {
+					throw new Error(
+						`Sandbox blocked read of "${params.path}": ${check.reason}.`
+					);
+				}
+			}
+			return localRead.execute(id, params, signal, onUpdate);
 		},
 	});
 
