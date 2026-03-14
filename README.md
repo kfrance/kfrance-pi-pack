@@ -57,6 +57,16 @@ Requires user confirmation before executing destructive git or GitHub commands. 
 - `git status`, `git log`, `git diff`, `git show`, `git fetch`, `git branch` (list), `git checkout` (branch switch)
 - `gh pr view/list`, `gh issue list`, `gh api` (GET)
 
+### compact-and-continue
+
+Registers a `compact_and_continue` tool that compacts the current conversation immediately, then queues a fresh user turn to resume work automatically.
+
+**Behavior:**
+- Optionally accepts `instructions` to bias the compaction summary
+- Prevents overlapping compaction runs in the same session
+- Notifies the user when compaction starts, finishes, or fails
+- After completion, sends a resume prompt telling pi to continue from the compacted summary and current todo state
+
 ## Skills
 
 ### linear-cli
