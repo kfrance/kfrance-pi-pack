@@ -715,6 +715,19 @@ export default function (pi: ExtensionAPI) {
 		}
 	});
 
+	// Listen for sandbox:deny-path events from other extensions (e.g., workflow)
+	pi.events.on("sandbox:deny-path", (data) => {
+		const { path } = data as { path: string };
+		if (!sandboxActive) return;
+		if (!currentFilesystem.denyWrite.includes(path)) {
+			currentFilesystem.denyWrite.push(path);
+			if (currentCtx) {
+				updateStatus(currentCtx);
+				currentCtx.ui.notify(`Sandbox: denied writable path '${path}' (via event)`, "info");
+			}
+		}
+	});
+
 	// /sandbox-deny <path> — deny writes to a path on the fly
 	pi.registerCommand("sandbox-deny", {
 		description: "Deny writes to a path (e.g. /sandbox-deny secrets/)",
