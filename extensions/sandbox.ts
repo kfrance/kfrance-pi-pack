@@ -73,9 +73,19 @@ interface SandboxJsonConfig {
 // ============================================================================
 
 export const DEFAULT_FILESYSTEM: FilesystemConfig = {
-	denyRead: ["~/.ssh", "~/.aws", "~/.gnupg", ".env", ".env.*", "*.pem", "*.key"],
+	denyRead: [
+		"~/.ssh",
+		"~/.aws",
+		"~/.gnupg",
+		"~/.pi/agent/auth.json",
+		"~/.pi/agent/secrets",
+		".env",
+		".env.*",
+		"*.pem",
+		"*.key",
+	],
 	allowWrite: [".", "/tmp"],
-	denyWrite: [],
+	denyWrite: ["~/.pi/agent/auth.json", "~/.pi/agent/secrets"],
 };
 
 // ============================================================================

@@ -48,6 +48,41 @@ Registers a `compact_and_continue` tool that compacts the current conversation i
 - Notifies the user when compaction starts, finishes, or fails
 - After completion, sends a resume prompt telling pi to continue from the compacted summary and current todo state
 
+### grok-search
+
+Registers a `grok_search` tool that searches the web and/or X via xAI's Responses API.
+
+**What it supports:**
+- web-only research against current external sources
+- X-only research for recent discussion and posts
+- mixed web + X research when you want both official docs and current chatter
+- optional filters for domains, X handles, dates, and seed URLs
+- concise sourced summaries with citations and tool-action details
+
+**Secret setup:**
+- Preferred machine-wide secret file: `~/.pi/agent/secrets/kfrance-pi-pack.env`
+- Required key inside that file: `XAI_API_KEY=...`
+- Optional override: set `XAI_API_KEY` in the environment for one-off runs
+- Optional secret file override: `KFRANCE_PI_PACK_SECRETS_FILE=/path/to/file.env`
+
+Example secret file setup:
+
+```bash
+mkdir -p ~/.pi/agent/secrets
+chmod 700 ~/.pi/agent/secrets
+cat > ~/.pi/agent/secrets/kfrance-pi-pack.env <<'EOF'
+XAI_API_KEY=your_xai_key_here
+EOF
+chmod 600 ~/.pi/agent/secrets/kfrance-pi-pack.env
+```
+
+Example prompts:
+- `Use grok_search to summarize the latest xAI API changes from official docs.`
+- `Use grok_search in x mode to summarize recent posts from @xai about Grok.`
+- `Use grok_search with allowedDomains=["docs.anthropic.com"] to find the latest prompt caching guidance.`
+
+**Security note:** when the sandbox extension is active, it now denies model reads and writes to `~/.pi/agent/secrets` and `~/.pi/agent/auth.json` by default.
+
 ## Skills
 
 ### linear-cli

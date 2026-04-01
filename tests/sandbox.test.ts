@@ -196,6 +196,15 @@ describe("sandbox", () => {
 			assert.ok(result.reason?.includes("~/.ssh"));
 		});
 
+		it("denies reads from pi secret directories", () => {
+			const result = isReadAllowed(HOME + "/.pi/agent/secrets/kfrance-pi-pack.env", CWD, {
+				...fs,
+				denyRead: [...fs.denyRead, "~/.pi/agent/secrets"],
+			});
+			assert.strictEqual(result.allowed, false);
+			assert.ok(result.reason?.includes("~/.pi/agent/secrets"));
+		});
+
 		it("denies reads matching basename pattern", () => {
 			const result = isReadAllowed("/project/.env", CWD, fs);
 			assert.strictEqual(result.allowed, false);
@@ -304,9 +313,12 @@ describe("sandbox", () => {
 			assert.ok(DEFAULT_FILESYSTEM.denyRead.includes("~/.ssh"));
 			assert.ok(DEFAULT_FILESYSTEM.denyRead.includes("~/.aws"));
 			assert.ok(DEFAULT_FILESYSTEM.denyRead.includes("~/.gnupg"));
+			assert.ok(DEFAULT_FILESYSTEM.denyRead.includes("~/.pi/agent/auth.json"));
+			assert.ok(DEFAULT_FILESYSTEM.denyRead.includes("~/.pi/agent/secrets"));
 			assert.ok(DEFAULT_FILESYSTEM.allowWrite.includes("."));
 			assert.ok(DEFAULT_FILESYSTEM.allowWrite.includes("/tmp"));
-			assert.deepStrictEqual(DEFAULT_FILESYSTEM.denyWrite, []);
+			assert.ok(DEFAULT_FILESYSTEM.denyWrite.includes("~/.pi/agent/auth.json"));
+			assert.ok(DEFAULT_FILESYSTEM.denyWrite.includes("~/.pi/agent/secrets"));
 		});
 	});
 });
