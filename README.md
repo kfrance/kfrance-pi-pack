@@ -10,40 +10,21 @@ pi install git:github.com/kfrance/kfrance-pi-pack
 
 ## Extensions
 
-### plan
+### subagent
 
-Structured planning workflow with two modes. Requires the [subagent extension](https://github.com/badlogic/pi-mono) (global).
+Vendored local subagent runtime based on `pi-subagents`, adapted for this package **without shipping any builtin agents**.
 
-**Usage:**
-```
-/plan <idea text or path>           # defaults to heavy
-/plan heavy <idea text or path>     # full ceremony
-/plan light <idea text or path>     # lightweight, no file saved
-```
+**What it provides:**
+- `subagent` tool for single, parallel, and chain delegation
+- `subagent_status` tool for checking background jobs
+- slash commands such as `/run`, `/chain`, `/parallel`, and `/agents`
+- async/background execution, notifications, and the agent manager UI
 
-**Both modes:**
-1. Codebase exploration
-2. 3–5 independent assumptions for confirmation
-3. Clarifying questions one at a time
-4. Test discovery via subagent
-5. Plan drafting with review
+**Agent discovery:**
+- user agents from `~/.pi/agent/agents/`
+- project agents from the nearest `.pi/agents/`
 
-**Heavy mode** runs test-discovery → then test-reviewer + maintainability-reviewer in parallel (3 subagent calls). Saves plan to `.plan/<plan_id>.md` with YAML frontmatter and git backup.
-
-**Light mode** runs test-discovery → then a single combined-reviewer (2 subagent calls). Produces a concise plan in chat with no file saved.
-
-### Bundled Agents
-
-The plan extension ships with four agents that are symlinked into `~/.pi/agent/agents/` on load, making them available for any extension or direct subagent invocation:
-
-| Agent | Purpose |
-|-------|---------|
-| `test-discovery` | Analyzes existing test landscape for proposed changes |
-| `test-reviewer` | Reviews plan's test coverage, flags anti-cheat patterns |
-| `maintainability-reviewer` | Reviews plan for long-term maintenance concerns |
-| `combined-reviewer` | Single-pass review covering both test and maintenance (light mode) |
-
-All agents use `claude-sonnet-4-6`.
+No ambient builtin agents like `scout`, `planner`, or `researcher` are included. If you want an agent, define it explicitly in user or project scope.
 
 ### git-gh-write-gate
 

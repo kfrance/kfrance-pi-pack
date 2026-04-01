@@ -21,11 +21,17 @@
     "@anthropic-ai/sandbox-runtime": "^0.0.37"
   },
   "peerDependencies": {
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*"
   },
   "devDependencies": {
+    "@mariozechner/pi-agent-core": "*",
+    "@mariozechner/pi-ai": "*",
     "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*",
     "@sinclair/typebox": "*",
     "@types/node": "^20.0.0",
     "tsx": "^4.0.0"
