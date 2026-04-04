@@ -26,17 +26,31 @@ Vendored local subagent runtime based on `pi-subagents`, adapted for this packag
 
 No ambient builtin agents like `scout`, `planner`, or `researcher` are included. If you want an agent, define it explicitly in user or project scope.
 
-### git-gh-write-gate
+### command-gate
 
-Requires user confirmation before executing destructive git or GitHub commands. Read-only commands pass through freely.
+Requires user confirmation before executing gated commands, and attempts to log every `bash` command it sees for later inspection.
 
 **Gated commands:**
-- **GitHub writes:** `gh api -X POST/PUT/PATCH/DELETE`, `gh pr create/merge/comment`, `gh issue create/comment`, etc.
-- **Git state changes:** `add`, `commit`, `push`, `rebase`, `reset`, `merge`, `cherry-pick`, `revert`, `stash`, `clean`, `restore`, branch/tag deletion, force push
+- **Any `gog` usage**
+- **Selected GitHub writes:** `gh api -X POST/PUT/PATCH/DELETE`, `gh api` requests that imply `POST` via `-f` / `--field` / `--input` unless `GET` is explicit, `gh pr create/merge/comment`, `gh issue create/comment`, etc.
+- **Selected git state changes:** `add`, `commit`, `push`, `rebase`, `reset`, `merge`, `cherry-pick`, `revert`, `stash`, `clean`, `restore`, branch/tag deletion, force push
 
 **Allowed freely:**
 - `git status`, `git log`, `git diff`, `git show`, `git fetch`, `git branch` (list), `git checkout` (branch switch)
 - `gh pr view/list`, `gh issue list`, `gh api` (GET)
+
+**Command logging:**
+- Writes JSONL logs to `$XDG_STATE_HOME/kfrance-pi-pack/command-gate/` when `XDG_STATE_HOME` is set
+- Otherwise writes to `~/.local/state/kfrance-pi-pack/command-gate/`
+- Active log file: `command-gate.jsonl`
+- Rotates when the next write would push the file over 50 MiB
+- Keeps unlimited numbered archives like `command-gate.jsonl.1`, `command-gate.jsonl.2`, etc.
+- Uses a lock file to serialize rotation/appends across concurrent pi sessions
+- Automatically reclaims stale lock files older than 30 seconds
+- Logging is best-effort: if a log write fails, the extension warns and continues with its normal gating decision
+
+**Safety bias:**
+- Matching is intentionally conservative. Mentions of gated commands inside larger shell strings can still be gated for safety (for example inside `echo`, `grep`, comments, or compound shell commands).
 
 ### compact-and-continue
 
