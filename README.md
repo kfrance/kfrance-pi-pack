@@ -99,6 +99,39 @@ Example prompts:
 
 ## Skills
 
+### council
+
+Run a multi-model council workflow where several models independently draft, critique, and revise an artifact before a fresh chairman synthesizes the final result.
+
+What it provides:
+- a `council` skill for orchestrating multi-model deliberation through normal `pi -p` runs
+- a `/council` prompt-template alias for ergonomic invocation
+- persistent per-participant pi sessions across rounds
+- a fresh chairman pass using `pi-cc-router/claude-opus-4-6` by default
+- Opus is intentionally routed through `pi-cc-router`, not OpenRouter
+- council runs can be directed to any explicit workspace path, and a repo-local temp area such as `.tmp/council/<slug>/` is a good default when available
+
+Typical command flow:
+- `/council ...` to load the skill
+- then `npx tsx ./skills/council/scripts/run-council.ts --brief <path>` to execute a run
+
+Typical flow:
+1. Choose a council workspace, preferably a repo-local temp path such as `.tmp/council/<slug>/`
+2. Create a council brief from the current conversation or a standalone task inside that workspace
+3. Run `npx tsx ./skills/council/scripts/run-council.ts --brief <path> --run-dir <workspace>`
+4. Read `summary.md` and `chairman/chairman-report.md` for the final artifact, key corrections, participant contribution breakdown, and participant ranking
+
+Notes:
+- relative `--run-dir` values resolve from `--cwd`
+- a repo-local temp workspace such as `.tmp/council/<slug>/` is a good place for briefs and council artifacts when available
+- keep final deliverables separate from the council workspace when the task wants the final artifact elsewhere
+- reusing `--run-dir` resets prior generated council outputs for a fresh rerun
+- default `pi` resolution prefers a non-`node_modules/.bin` binary on PATH
+- council subprocesses explicitly enable built-in tools including `bash`, `grep`, `find`, and `ls`
+- participant runs execute concurrently within each council stage
+- the chairman report now includes a participant-by-participant contribution breakdown and a ranked assessment of council members for that run
+- missing expected files can be retried with `--max-retries <n>`
+
 ### linear-cli
 
 Manage Linear issues from the command line using the `linear` CLI. Requires the [`linear` CLI](https://github.com/schpet/linear-cli) to be installed and authenticated.
