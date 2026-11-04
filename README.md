@@ -97,12 +97,6 @@ Notes:
 - the chairman report now includes a participant-by-participant contribution breakdown and a ranked assessment of council members for that run
 - missing expected files can be retried with `--max-retries <n>`
 
-### linear-cli
-
-Manage Linear issues from the command line using the `linear` CLI. Requires the [`linear` CLI](https://github.com/schpet/linear-cli) to be installed and authenticated.
-
-Covers issue management, team/project queries, and direct GraphQL API access as a fallback for advanced queries.
-
 ## Development
 
 ```bash
