@@ -1,9 +1,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import {
+	createSandboxExtension,
 	DEFAULT_FILESYSTEM,
+	detectWriteDenial,
 	expandAndResolve,
 	expandConfigPath,
 	formatConfig,
@@ -12,7 +16,12 @@ import {
 	loadJsonConfig,
 	matchesDenyPattern,
 	mergeFilesystem,
+	parseSandboxMode,
+	RERUN_CONFIRM_TITLE,
+	RERUN_DECLINED_LINE,
+	resolveFilesystemForCwd,
 	type FilesystemConfig,
+	type SandboxRuntime,
 } from "../extensions/sandbox.ts";
 
 const CWD = "/home/user/project";
@@ -321,4 +330,360 @@ describe("sandbox", () => {
 			assert.ok(DEFAULT_FILESYSTEM.denyWrite.includes("~/.pi/agent/secrets"));
 		});
 	});
+
+	describe("DEFAULT_FILESYSTEM escape sockets", () => {
+		it("hides the per-user runtime dir and the Docker socket", () => {
+			if (typeof process.getuid === "function") {
+				assert.ok(DEFAULT_FILESYSTEM.denyRead.includes(`/run/user/${process.getuid()}`));
+			}
+			assert.ok(DEFAULT_FILESYSTEM.denyRead.includes("/var/run/docker.sock"));
+		});
+	});
+
+	// ========================================================================
+	// parseSandboxMode
+	// ========================================================================
+
+	describe("parseSandboxMode", () => {
+		it("reads required, off and unset", () => {
+			assert.deepStrictEqual(parseSandboxMode("required"), { mode: "required" });
+			assert.deepStrictEqual(parseSandboxMode("off"), { mode: "off" });
+			assert.deepStrictEqual(parseSandboxMode(undefined), { mode: "config" });
+			assert.deepStrictEqual(parseSandboxMode(""), { mode: "config" });
+		});
+
+		it("fails closed on unknown values", () => {
+			const result = parseSandboxMode("require");
+			assert.strictEqual(result.mode, "required");
+			assert.ok(result.warning?.includes("require"));
+		});
+	});
+
+	// ========================================================================
+	// resolveFilesystemForCwd
+	// ========================================================================
+
+	describe("resolveFilesystemForCwd", () => {
+		const fs: FilesystemConfig = { denyRead: [".env", "~/.ssh"], allowWrite: [".", "/tmp"], denyWrite: ["secrets"] };
+
+		it("makes relative entries absolute against the tool cwd", () => {
+			const resolved = resolveFilesystemForCwd(fs, "/work/conv", "/work/conv");
+			assert.deepStrictEqual(resolved.allowWrite, ["/work/conv", "/tmp"]);
+			assert.deepStrictEqual(resolved.denyRead, ["/work/conv/.env", resolve(HOME, ".ssh")]);
+			assert.deepStrictEqual(resolved.denyWrite, ["/work/conv/secrets"]);
+		});
+
+		it("adds the cwd's mandatory denies when pi's cwd differs from the process cwd", () => {
+			const resolved = resolveFilesystemForCwd(fs, "/work/conv", "/somewhere/else");
+			assert.ok(resolved.denyWrite.includes("/work/conv/.bashrc"));
+			assert.ok(resolved.denyWrite.includes("/work/conv/.claude/commands"));
+		});
+	});
+
+	// ========================================================================
+	// detectWriteDenial
+	// ========================================================================
+
+	describe("detectWriteDenial", () => {
+		const fs: FilesystemConfig = { denyRead: [], allowWrite: ["."], denyWrite: [] };
+
+		it("detects read-only file system errors", () => {
+			assert.ok(detectWriteDenial("touch: cannot touch '/x': Read-only file system", CWD, fs));
+		});
+
+		it("detects permission errors on paths outside allowWrite", () => {
+			assert.ok(detectWriteDenial("bash: /etc/hosts: Permission denied", CWD, fs));
+			assert.ok(detectWriteDenial("Error: EACCES: permission denied, open '/opt/x.txt'", CWD, fs));
+			assert.ok(detectWriteDenial("mkdir: cannot create directory ‘/srv/new’: Permission denied", CWD, fs));
+		});
+
+		it("ignores permission errors inside allowWrite and unrelated failures", () => {
+			assert.ok(!detectWriteDenial(`bash: ${CWD}/script.sh: Permission denied`, CWD, fs));
+			assert.ok(!detectWriteDenial("grep: no match", CWD, fs));
+		});
+
+		it("counts a runtime violation report", () => {
+			assert.ok(detectWriteDenial("", CWD, fs, "<sandbox_violations>deny file-write /x</sandbox_violations>"));
+		});
+	});
+
+	// ========================================================================
+	// Extension behavior
+	// ========================================================================
+
+	describe("extension", () => {
+		it("required mode with unavailable dependencies blocks bash, edit and write", async () => {
+			const dir = makeTempDir();
+			try {
+				const marker = join(dir, "ran.txt");
+				const harness = loadExtension({ PI_SANDBOX: "required" }, fakeRuntime({ depsErrors: ["bubblewrap (bwrap) not installed"] }));
+				const { ctx } = createCtx(dir, true);
+				await harness.emit("session_start", {}, ctx);
+
+				await assert.rejects(
+					harness.tools.get("bash").execute("1", { command: `touch ${marker}` }, undefined, undefined, ctx),
+					/Refusing to run bash: PI_SANDBOX=required.*bubblewrap/,
+				);
+				await assert.rejects(
+					harness.tools.get("write").execute("2", { path: marker, content: "x" }, undefined, undefined, ctx),
+					/Refusing to run write/,
+				);
+				writeFileSync(join(dir, "edit-me.txt"), "hello");
+				await assert.rejects(
+					harness.tools.get("edit").execute("3", { path: "edit-me.txt", edits: [{ oldText: "hello", newText: "bye" }] }, undefined, undefined, ctx),
+					/Refusing to run edit/,
+				);
+				assert.ok(!existsSync(marker), "nothing ran unsandboxed");
+				assert.strictEqual(readFileSync(join(dir, "edit-me.txt"), "utf8"), "hello");
+
+				const userBash = await harness.emit("user_bash", { command: `touch ${marker}`, cwd: dir, excludeFromContext: false }, ctx);
+				assert.match(userBash.result.output, /Refusing to run bash/);
+				assert.ok(!existsSync(marker));
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("required mode refuses even before session_start ran", async () => {
+			const dir = makeTempDir();
+			try {
+				const harness = loadExtension({ PI_SANDBOX: "required" }, fakeRuntime({ supported: false }));
+				const { ctx } = createCtx(dir, true);
+				await assert.rejects(
+					harness.tools.get("bash").execute("1", { command: "true" }, undefined, undefined, ctx),
+					/not supported on this platform/,
+				);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("asks to rerun a denied write and runs the same command once on yes", async () => {
+			const dir = makeTempDir();
+			try {
+				const log = join(dir, "log.txt");
+				const command = `echo run >> ${log}`;
+				const harness = loadExtension({ PI_SANDBOX: "required" }, fakeRuntime({ deny: true }));
+				const { ctx, confirms } = createCtx(dir, true);
+				await harness.emit("session_start", {}, ctx);
+
+				const result = await harness.tools.get("bash").execute("1", { command }, undefined, undefined, ctx);
+				assert.deepStrictEqual(confirms, [[RERUN_CONFIRM_TITLE, command]]);
+				assert.ok(!result.isError);
+				assert.strictEqual(readFileSync(log, "utf8"), "run\n");
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("returns the original failure plus a refusal line on no", async () => {
+			const dir = makeTempDir();
+			try {
+				const log = join(dir, "log.txt");
+				const command = `echo run >> ${log}`;
+				const harness = loadExtension({ PI_SANDBOX: "required" }, fakeRuntime({ deny: true }));
+				const { ctx, confirms } = createCtx(dir, false);
+				await harness.emit("session_start", {}, ctx);
+
+				const result = await harness.tools.get("bash").execute("1", { command }, undefined, undefined, ctx);
+				assert.deepStrictEqual(confirms, [[RERUN_CONFIRM_TITLE, command]]);
+				assert.strictEqual(result.isError, true);
+				const text = result.content.map((c: { text?: string }) => c.text ?? "").join("\n");
+				assert.match(text, /Read-only file system/);
+				assert.ok(text.endsWith(RERUN_DECLINED_LINE));
+				assert.ok(!existsSync(log));
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+
+		it("does not ask when a sandboxed command fails for another reason", async () => {
+			const dir = makeTempDir();
+			try {
+				const harness = loadExtension({ PI_SANDBOX: "required" }, fakeRuntime({}));
+				const { ctx, confirms } = createCtx(dir, true);
+				await harness.emit("session_start", {}, ctx);
+				const result = await harness.tools.get("bash").execute("1", { command: "echo nope >&2; exit 3" }, undefined, undefined, ctx);
+				assert.strictEqual(result.isError, true);
+				assert.deepStrictEqual(confirms, []);
+			} finally {
+				rmSync(dir, { recursive: true, force: true });
+			}
+		});
+	});
+
+	// ========================================================================
+	// Real bubblewrap
+	// ========================================================================
+
+	describe("with bubblewrap", { skip: bwrapUnavailableReason() }, () => {
+		function setupProject() {
+			const root = makeTempDir();
+			const project = join(root, "project");
+			const outside = join(root, "outside");
+			mkdirSync(join(project, ".pi"), { recursive: true });
+			mkdirSync(outside);
+			writeFileSync(join(project, ".pi", "sandbox.json"), JSON.stringify({ enabled: true, filesystem: { allowWrite: ["."] } }));
+			return { root, project, outside };
+		}
+
+		it("denies a write outside allowWrite and allows one inside", async () => {
+			const { root, project, outside } = setupProject();
+			try {
+				const harness = loadExtension({}, undefined);
+				const { ctx, confirms } = createCtx(project, false);
+				await harness.emit("session_start", {}, ctx);
+
+				const target = join(outside, "denied.txt");
+				const denied = await harness.tools.get("bash").execute("1", { command: `touch ${target}` }, undefined, undefined, ctx);
+				assert.strictEqual(denied.isError, true);
+				assert.ok(!existsSync(target));
+				assert.deepStrictEqual(confirms, [[RERUN_CONFIRM_TITLE, `touch ${target}`]]);
+
+				const allowed = await harness.tools.get("bash").execute("2", { command: "touch inside.txt && echo ok" }, undefined, undefined, ctx);
+				assert.ok(!allowed.isError);
+				assert.ok(existsSync(join(project, "inside.txt")));
+
+				await assert.rejects(
+					harness.tools.get("write").execute("3", { path: join(outside, "w.txt"), content: "x" }, undefined, undefined, ctx),
+					/Sandbox blocked write/,
+				);
+				await harness.emit("session_shutdown", {}, ctx);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it("keeps the host network namespace and allows Unix sockets, but hides the user bus", async () => {
+			const { root, project } = setupProject();
+			try {
+				const harness = loadExtension({}, undefined);
+				const { ctx } = createCtx(project, false);
+				await harness.emit("session_start", {}, ctx);
+				const hostNet = spawnSync("readlink", ["/proc/self/ns/net"], { encoding: "utf8" }).stdout.trim();
+				const sock = join(project, "t.sock");
+				const command = [
+					"readlink /proc/self/ns/net",
+					`${process.execPath} -e "require('net').createServer().listen('${sock}', function () { console.log('unix-ok'); this.close(); })"`,
+					typeof process.getuid === "function" ? `test -e /run/user/${process.getuid()}/bus && echo bus-visible || echo bus-hidden` : "echo bus-hidden",
+				].join("; ");
+				const result = await harness.tools.get("bash").execute("1", { command }, undefined, undefined, ctx);
+				const text = result.content.map((c: { text?: string }) => c.text ?? "").join("\n");
+				assert.ok(text.includes(hostNet), `same network namespace: ${text}`);
+				assert.match(text, /unix-ok/);
+				assert.match(text, /bus-hidden/);
+				await harness.emit("session_shutdown", {}, ctx);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it("reruns a denied command once outside the sandbox when approved", async () => {
+			const { root, project, outside } = setupProject();
+			try {
+				const harness = loadExtension({}, undefined);
+				const { ctx } = createCtx(project, true);
+				await harness.emit("session_start", {}, ctx);
+				const log = join(outside, "log.txt");
+				const result = await harness.tools.get("bash").execute("1", { command: `echo run >> ${log}` }, undefined, undefined, ctx);
+				assert.ok(!result.isError);
+				assert.strictEqual(readFileSync(log, "utf8"), "run\n");
+				await harness.emit("session_shutdown", {}, ctx);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+
+		it("PI_SANDBOX=off leaves tools unsandboxed even when config enables the sandbox", async () => {
+			const { root, project, outside } = setupProject();
+			try {
+				const harness = loadExtension({ PI_SANDBOX: "off" }, undefined);
+				const { ctx, confirms } = createCtx(project, false);
+				await harness.emit("session_start", {}, ctx);
+
+				const target = join(outside, "free.txt");
+				const result = await harness.tools.get("bash").execute("1", { command: `touch ${target}` }, undefined, undefined, ctx);
+				assert.ok(!result.isError);
+				assert.ok(existsSync(target));
+				await harness.tools.get("write").execute("2", { path: join(outside, "w.txt"), content: "x" }, undefined, undefined, ctx);
+				assert.strictEqual(readFileSync(join(outside, "w.txt"), "utf8"), "x");
+				assert.deepStrictEqual(confirms, []);
+			} finally {
+				rmSync(root, { recursive: true, force: true });
+			}
+		});
+	});
 });
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function makeTempDir(): string {
+	return mkdtempSync(join(tmpdir(), "pi-sandbox-test-"));
+}
+
+function bwrapUnavailableReason(): string | false {
+	const result = spawnSync("bwrap", ["--ro-bind", "/", "/", "--dev", "/dev", "true"], { encoding: "utf8" });
+	if (result.error) return `bwrap not runnable: ${result.error.message}`;
+	return result.status === 0 ? false : `bwrap failed: ${result.stderr.trim()}`;
+}
+
+function fakeRuntime(options: { depsErrors?: string[]; supported?: boolean; deny?: boolean }): SandboxRuntime {
+	const denial = `echo "touch: cannot touch '/outside/x': Read-only file system" >&2; exit 1`;
+	return {
+		isSupportedPlatform: () => options.supported ?? true,
+		checkDependencies: () => ({ errors: options.depsErrors ?? [], warnings: [] }),
+		updateConfig: () => {},
+		wrapWithSandbox: async (command: string) => (command === "true" || !options.deny ? command : denial),
+		cleanupAfterCommand: () => {},
+		annotateStderrWithSandboxFailures: () => "",
+		reset: async () => {},
+	} as unknown as SandboxRuntime;
+}
+
+type Handler = (event: unknown, ctx: unknown) => unknown;
+
+function loadExtension(env: NodeJS.ProcessEnv, runtime: SandboxRuntime | undefined) {
+	const tools = new Map<string, any>();
+	const handlers = new Map<string, Handler[]>();
+	const flags = new Map<string, unknown>();
+	const pi = {
+		registerFlag: (name: string, opts: { default?: unknown }) => flags.set(name, opts.default),
+		getFlag: (name: string) => flags.get(name),
+		registerTool: (definition: { name: string }) => tools.set(definition.name, definition),
+		registerCommand: () => {},
+		on: (event: string, handler: Handler) => handlers.set(event, [...(handlers.get(event) ?? []), handler]),
+		events: { on: () => {} },
+	};
+	createSandboxExtension({ env, runtime })(pi as any);
+	return {
+		tools,
+		async emit(event: string, payload: object, ctx: unknown): Promise<any> {
+			let last: unknown;
+			for (const handler of handlers.get(event) ?? []) last = await handler({ type: event, ...payload }, ctx);
+			return last;
+		},
+	};
+}
+
+function createCtx(cwd: string, answer: boolean) {
+	const confirms: Array<[string, string]> = [];
+	const ctx = {
+		cwd,
+		hasUI: true,
+		mode: "tui",
+		model: undefined,
+		sessionManager: { getSessionId: () => "test-session", getSessionFile: () => undefined },
+		ui: {
+			confirm: async (title: string, message: string) => {
+				confirms.push([title, message]);
+				return answer;
+			},
+			notify: () => {},
+			setStatus: () => {},
+			theme: { fg: (_color: string, text: string) => text },
+		},
+	};
+	return { ctx: ctx as any, confirms };
+}
