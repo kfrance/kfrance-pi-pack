@@ -42,4 +42,4 @@ Uses Node's built-in test runner (`node:test` + `node:assert`) via tsx. No exter
 - Extensions export a default function `(pi: ExtensionAPI) => void` for pi to load
 - Extract core logic into named exports for testability
 - Use `node:test` (`describe`/`it`) and `node:assert` for tests
-- Pi peer dependencies (`@mariozechner/pi-coding-agent`, `@sinclair/typebox`) use `"*"` range
+- Pi peer dependencies (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`, etc.) use `"*"` range; import from `@earendil-works/*`
